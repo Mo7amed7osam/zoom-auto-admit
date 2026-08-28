@@ -17,8 +17,11 @@ cd "$project_root"
 # startup workflow's automation (opening Zoom's account menu and starting a
 # meeting genuinely need the foreground) and the schedules editor window (the
 # user opened it). Everything on the monitoring path must stay focus-free.
-forbidden_in_app='\.activate\(|setFrontmost|kAXRaiseAction|kAXFrontmostAttribute|\.unhide\(\)|CGEventPost'
-activation_allowlist='Sources/ZoomAutoAdmitCore/Workflow/LiveZoomAutomation.swift|Sources/ZoomAutoAdmitApp/SchedulerWindowController.swift|Sources/ZoomAutoAdmitApp/PreJoinCapture.swift'
+# The rule is specifically about bringing *Zoom* forward. Activating this app's
+# own windows (NSApp.activate) and AutoLayout's NSLayoutConstraint.activate are
+# unrelated and are excluded.
+forbidden_in_app='NSRunningApplication|runningApplication.*\.activate\(|application\.activate\(|setFrontmost|kAXRaiseAction|kAXFrontmostAttribute|\.unhide\(\)|CGEventPost'
+activation_allowlist='Sources/ZoomAutoAdmitCore/Workflow/LiveZoomAutomation.swift|Sources/ZoomAutoAdmitApp/PreJoinCapture.swift'
 if grep -rnE "$forbidden_in_app" Sources/ZoomAutoAdmitApp Sources/ZoomAutoAdmitCore \
     | grep -vE "$activation_allowlist" \
     | grep -v "^\s*//" \

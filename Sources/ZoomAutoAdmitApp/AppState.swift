@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import ZoomAutoAdmitCore
 
@@ -18,6 +19,40 @@ struct AdmitActionRecord: Equatable {
     let description: String
 }
 
+/// One small vocabulary for status colour across the whole app, mapped to
+/// system colours so light and dark mode both work without hard-coded values.
+enum StatusLevel {
+    case normal
+    case neutral
+    case warning
+    case error
+
+    var color: NSColor {
+        switch self {
+        case .normal: return .systemGreen
+        case .neutral: return .secondaryLabelColor
+        case .warning: return .systemOrange
+        case .error: return .systemRed
+        }
+    }
+
+    var dot: String {
+        switch self {
+        case .normal: return "●"
+        case .neutral: return "○"
+        case .warning: return "▲"
+        case .error: return "■"
+        }
+    }
+}
+
+/// What the most recent scheduled run is doing, for Run Now feedback.
+enum RunOutcome: Equatable {
+    case running(scheduleName: String)
+    case succeeded(meetingName: String, autoAdmitActive: Bool)
+    case failed(title: String, detail: String)
+}
+
 final class AppState {
     private(set) var displayStatus: AppDisplayStatus = .idle
     private(set) var zoomStatus = "Not checked"
@@ -30,6 +65,7 @@ final class AppState {
     /// cares about, not the Waiting Room poll.
     private(set) var workflowStatus: String?
     private(set) var nextScheduleSummary: [String] = []
+    private(set) var runOutcome: RunOutcome?
     var monitoringEnabled: Bool
     var onChange: (() -> Void)?
 
@@ -56,6 +92,49 @@ final class AppState {
     func setNextScheduleSummary(_ lines: [String]) {
         nextScheduleSummary = lines
         notifyChange()
+    }
+
+    func setRunOutcome(_ outcome: RunOutcome?) {
+        runOutcome = outcome
+        notifyChange()
+    }
+
+    /// Drops the short-lived success/failure banner but keeps a running workflow.
+    func clearTransientRunState() {
+        if case .running = runOutcome { return }
+        runOutcome = nil
+        workflowStatus = nil
+        notifyChange()
+    }
+
+    var isWorkflowRunning: Bool {
+        if case .running = runOutcome { return true }
+        return false
+    }
+
+    /// The single line shown at the top of the menu.
+    var statusLevel: StatusLevel {
+        if let runOutcome {
+            switch runOutcome {
+            case .running: return .normal
+            case .succeeded: return .normal
+            case .failed: return .error
+            }
+        }
+        switch displayStatus {
+        case .monitoring, .participantAdmitted:
+            return zoomStatus == "Temporarily unavailable" ? .warning : .normal
+        case .idle:
+            return .neutral
+        case .zoomNotRunning, .meetingNotDetected:
+            return .neutral
+        case .meetingOnOtherDesktop:
+            return .warning
+        case .permissionRequired, .permissionGrantedRelaunchRequired:
+            return .error
+        case .error:
+            return .error
+        }
     }
 
     func apply(_ event: AutoAdmitMonitorEvent) {
@@ -126,6 +205,10 @@ final class AppState {
     }
 
     var statusText: String {
+        if case .succeeded(let meetingName, let autoAdmitActive) = runOutcome {
+            return autoAdmitActive ? "Meeting started — Auto Admit active" : "\(meetingName) started"
+        }
+        if case .failed(let title, _) = runOutcome { return title }
         if let workflowStatus { return workflowStatus }
         switch displayStatus {
         case .idle: return "Idle"
@@ -141,12 +224,21 @@ final class AppState {
     }
 
     var menuBarSymbolName: String {
+        // A scheduled startup in progress outranks the monitoring state: it is
+        // the thing the user is waiting on.
+        if isWorkflowRunning { return "clock.badge" }
+        if case .failed = runOutcome { return "exclamationmark.triangle" }
         switch displayStatus {
-        case .monitoring, .participantAdmitted: return "person.badge.plus"
-        case .permissionRequired, .permissionGrantedRelaunchRequired, .error: return "exclamationmark.triangle"
-        case .meetingOnOtherDesktop: return "rectangle.on.rectangle"
-        case .zoomNotRunning, .meetingNotDetected: return "video.slash"
-        case .idle: return "pause.circle"
+        case .monitoring, .participantAdmitted:
+            return monitoringEnabled ? "person.badge.plus.fill" : "person.badge.plus"
+        case .permissionRequired, .permissionGrantedRelaunchRequired, .error:
+            return "exclamationmark.triangle"
+        case .meetingOnOtherDesktop:
+            return "rectangle.on.rectangle"
+        case .zoomNotRunning, .meetingNotDetected:
+            return "person.badge.plus"
+        case .idle:
+            return "pause.circle"
         }
     }
 

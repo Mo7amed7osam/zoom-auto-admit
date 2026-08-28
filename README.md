@@ -280,6 +280,62 @@ anything the workflow refuses to disturb a call already in progress; if the stat
 is `unknown` it spends its one permitted foreground interruption bringing Zoom
 forward and asks again, and stops entirely if it still cannot tell.
 
+### The pre-join preview
+
+Zoom usually shows a preview window before a meeting actually begins, offering
+Audio, Video and Start. The workflow handles it rather than sitting in front of
+it waiting — which is exactly what it did before this was added:
+
+```
+state=verifyingMeeting — Start requested via Zoom menu: Start meeting
+[90 seconds later] state=failed — The meeting did not start
+```
+
+Zoom labels these controls with the **action they perform, not the state they are
+in**: "Mute" means the microphone is currently live, "Unmute" means it is already
+muted, "Start Video" means the camera is off, "Stop Video" means it is on.
+Reading that backwards would switch a microphone *on* moments before a meeting,
+so the mapping is explicit, tested in both directions, and anything outside the
+known vocabulary is reported as `unknown`.
+
+For each device the workflow reads the live state first and only acts when it
+must:
+
+```
+Pre-join preview detected
+Microphone state: ON
+Turning microphone OFF
+Microphone state verified: OFF
+Camera state: ON
+Turning camera OFF
+Camera state verified: OFF
+Start button found
+Pressing Start
+Meeting verified (ax-meeting-window-title)
+Auto Admit active
+```
+
+If a device is already off, the log reads `Microphone state: OFF — no action` and
+nothing is pressed. Every one of these aborts the workflow *before* Start rather
+than guessing:
+
+* the control cannot be found,
+* several controls match the same device,
+* the state cannot be read confidently,
+* the control was pressed but the device did not actually turn off,
+* the Start button cannot be identified, or more than one candidate matches.
+
+When any of those happen the live preview hierarchy is written to
+`~/Library/Logs/Zoom Auto Admit/zoom-prejoin-snapshot.log`, so the vocabulary can
+be extended from real data instead of guesswork. `Join Audio` is deliberately
+classed as *off*: audio is not connected, nothing is transmitting, and pressing
+it would turn audio on.
+
+`Start` is matched exactly, never as a substring, so `Start Video` and
+`Join with Computer Audio` can never be mistaken for it. Windows showing
+in-meeting participant structure are never treated as a preview, so the
+automation cannot press controls during a live call.
+
 ### Focus
 
 The startup workflow may bring Zoom forward — opening menus and starting a

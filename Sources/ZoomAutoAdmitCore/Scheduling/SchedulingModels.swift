@@ -169,15 +169,62 @@ public struct MeetingReference: Codable, Equatable, Hashable {
 
     public var name: String
     public var kind: Kind
+    /// Optional meeting passcode, taken from a pasted invite link.
+    public var passcode: String?
 
-    public init(name: String, kind: Kind) {
+    public init(name: String, kind: Kind, passcode: String? = nil) {
         self.name = name
         self.kind = kind
+        self.passcode = passcode
     }
 
-    /// Digits only. Zoom meeting numbers are commonly written `123 4567 8901`.
+    private enum CodingKeys: String, CodingKey { case name, kind, passcode }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        kind = try container.decode(Kind.self, forKey: .kind)
+        passcode = try container.decodeIfPresent(String.self, forKey: .passcode)
+    }
+
+    /// Extracts a Zoom meeting number from a plain number *or* a full invite
+    /// link.
+    ///
+    /// Stripping every non-digit is wrong for a link: the host name carries
+    /// digits of its own, so `https://us05web.zoom.us/j/94698416251` would
+    /// become `0594698416251` and silently open nothing. Links are therefore
+    /// parsed structurally, and only a bare entry falls back to digit filtering.
     public static func normalizedMeetingID(_ raw: String) -> String {
-        raw.filter(\.isNumber)
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard looksLikeLink(trimmed) else { return trimmed.filter(\.isNumber) }
+
+        // https://<anything>.zoom.us/j/<digits> and /s/<digits> and /w/<digits>
+        for marker in ["/j/", "/s/", "/w/", "/my/"] {
+            if let range = trimmed.range(of: marker) {
+                let tail = trimmed[range.upperBound...]
+                let digits = tail.prefix { $0.isNumber }
+                if !digits.isEmpty { return String(digits) }
+            }
+        }
+        // zoommtg://zoom.us/join?confno=<digits>
+        if let range = trimmed.range(of: "confno=") {
+            let digits = trimmed[range.upperBound...].prefix { $0.isNumber }
+            if !digits.isEmpty { return String(digits) }
+        }
+        return ""
+    }
+
+    /// Pulls `pwd=` out of a pasted invite link, when present.
+    public static func passcode(from raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = trimmed.range(of: "pwd=") else { return nil }
+        let value = trimmed[range.upperBound...].prefix { $0.isLetter || $0.isNumber || $0 == "." || $0 == "_" || $0 == "-" }
+        return value.isEmpty ? nil : String(value)
+    }
+
+    public static func looksLikeLink(_ raw: String) -> Bool {
+        let value = raw.lowercased()
+        return value.contains("://") || value.contains("zoom.us") || value.contains("/j/")
     }
 
     public var displayText: String {
@@ -188,6 +235,33 @@ public struct MeetingReference: Codable, Equatable, Hashable {
         case .instantMeeting:
             return "\(name) (personal meeting)"
         }
+    }
+
+    /// Shorter form for list rows, where the schedule name is already shown
+    /// above and repeating it just pushes the useful part out of view.
+    public var summaryText: String {
+        switch kind {
+        case .meetingID(let identifier):
+            let digits = Self.normalizedMeetingID(identifier)
+            return digits.isEmpty ? name : "\(name) · \(Self.groupedMeetingID(digits))"
+        case .instantMeeting:
+            return "\(name) · Personal meeting"
+        }
+    }
+
+    /// Zoom writes meeting numbers in 3-4-4 groups.
+    public static func groupedMeetingID(_ digits: String) -> String {
+        guard digits.count > 6 else { return digits }
+        var remaining = Substring(digits)
+        var groups: [String] = []
+        for size in [3, 4, 4] {
+            guard !remaining.isEmpty else { break }
+            let chunk = remaining.prefix(size)
+            groups.append(String(chunk))
+            remaining = remaining.dropFirst(chunk.count)
+        }
+        if !remaining.isEmpty { groups.append(String(remaining)) }
+        return groups.joined(separator: " ")
     }
 }
 
@@ -223,6 +297,12 @@ public struct ZoomSchedule: Codable, Equatable, Identifiable, Hashable {
     public var accountProfileID: UUID
     public var meeting: MeetingReference
     public var enablesAutoAdmit: Bool
+    /// Mute the microphone in Zoom's pre-join preview before starting.
+    /// The workflow still reads Zoom's real state and only presses when the
+    /// microphone is actually live.
+    public var mutesMicrophoneBeforeJoining: Bool
+    /// Turn the camera off in Zoom's pre-join preview before starting.
+    public var disablesCameraBeforeJoining: Bool
     /// Zoom is launched this many minutes before the start time so its UI is
     /// ready when the workflow runs.
     public var launchZoomMinutesEarly: Int
@@ -237,6 +317,8 @@ public struct ZoomSchedule: Codable, Equatable, Identifiable, Hashable {
         accountProfileID: UUID,
         meeting: MeetingReference,
         enablesAutoAdmit: Bool = true,
+        mutesMicrophoneBeforeJoining: Bool = true,
+        disablesCameraBeforeJoining: Bool = true,
         launchZoomMinutesEarly: Int = 2
     ) {
         self.id = id
@@ -248,7 +330,36 @@ public struct ZoomSchedule: Codable, Equatable, Identifiable, Hashable {
         self.accountProfileID = accountProfileID
         self.meeting = meeting
         self.enablesAutoAdmit = enablesAutoAdmit
+        self.mutesMicrophoneBeforeJoining = mutesMicrophoneBeforeJoining
+        self.disablesCameraBeforeJoining = disablesCameraBeforeJoining
         self.launchZoomMinutesEarly = min(max(launchZoomMinutesEarly, 0), 60)
+    }
+
+    // Hand-written decoding so schedules saved before the pre-join settings
+    // existed keep loading, defaulting to the safe choice: both devices off.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, isEnabled, recurrence, startTime, endTime, accountProfileID
+        case meeting, enablesAutoAdmit, mutesMicrophoneBeforeJoining
+        case disablesCameraBeforeJoining, launchZoomMinutesEarly
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+        recurrence = try container.decode(ScheduleRecurrence.self, forKey: .recurrence)
+        startTime = try container.decode(TimeOfDay.self, forKey: .startTime)
+        endTime = try container.decodeIfPresent(TimeOfDay.self, forKey: .endTime)
+        accountProfileID = try container.decode(UUID.self, forKey: .accountProfileID)
+        meeting = try container.decode(MeetingReference.self, forKey: .meeting)
+        enablesAutoAdmit = try container.decodeIfPresent(Bool.self, forKey: .enablesAutoAdmit) ?? true
+        mutesMicrophoneBeforeJoining =
+            try container.decodeIfPresent(Bool.self, forKey: .mutesMicrophoneBeforeJoining) ?? true
+        disablesCameraBeforeJoining =
+            try container.decodeIfPresent(Bool.self, forKey: .disablesCameraBeforeJoining) ?? true
+        launchZoomMinutesEarly =
+            try container.decodeIfPresent(Int.self, forKey: .launchZoomMinutesEarly) ?? 2
     }
 }
 

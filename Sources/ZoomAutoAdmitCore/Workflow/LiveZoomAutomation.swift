@@ -6,10 +6,17 @@ import ZoomAXSupport
 
 /// Production implementation of the workflow seam.
 public final class LiveZoomAutomation: ZoomAutomating {
-    /// Zoom's public URL scheme. Registered by the installed client under
-    /// `CFBundleURLSchemes`, and its `start` action targets a meeting number
-    /// using whichever account is currently signed in.
-    public static let startMeetingURLTemplate = "zoommtg://zoom.us/start?confno=%@"
+    /// Zoom's public URL scheme, registered by the installed client under
+    /// `CFBundleURLSchemes`.
+    ///
+    /// `join` is used rather than `start`. Both are public, but `start` means
+    /// "begin a meeting as host" and Zoom resolves it against the signed-in
+    /// account rather than the number given — in live use it opened the
+    /// account's personal meeting room instead of the scheduled meeting.
+    /// `join` names the meeting explicitly, and because the workflow has
+    /// already verified that the host account is signed in, joining a meeting
+    /// that account owns starts it as host.
+    public static let joinMeetingURLTemplate = "zoommtg://zoom.us/join?confno=%@"
     public static let startMeetingMenuTitle = "Start meeting"
 
     private let logger = Logger(subsystem: "com.mohamedhosam.ZoomAutoAdmit", category: "automation")
@@ -90,6 +97,24 @@ public final class LiveZoomAutomation: ZoomAutomating {
         ZoomAXSupport.meetingPresence(pid: process.pid, bundleIdentifier: process.bundleIdentifier)
     }
 
+    /// Zoom disables its own `Start meeting` entry while it is not ready, which
+    /// is an application-level signal and therefore works even when every Zoom
+    /// window is on another Space.
+    public func isReadyToStartMeeting(for process: ZoomProcess) -> Bool {
+        guard let reading = ZoomAXSupport.zoomMenuBarReading(pid: process.pid),
+              let item = ZoomAXSupport.applicationMenuItem(
+                  titled: Self.startMeetingMenuTitle,
+                  inMenuBar: reading.root
+              ) else {
+            return false
+        }
+        return item.node.enabled
+    }
+
+    public func meetingWindowSignature(for process: ZoomProcess) -> Set<CGWindowID> {
+        ZoomAXSupport.meetingWindowSignature(pid: process.pid)
+    }
+
     public func startMeeting(_ meeting: MeetingReference) -> MeetingStartOutcome {
         switch meeting.kind {
         case .meetingID(let raw):
@@ -97,12 +122,18 @@ public final class LiveZoomAutomation: ZoomAutomating {
             guard !digits.isEmpty else {
                 return .rejected("meeting ID has no digits")
             }
-            guard let url = URL(string: String(format: Self.startMeetingURLTemplate, digits)) else {
-                return .rejected("could not build the Zoom start URL")
+            var urlText = String(format: Self.joinMeetingURLTemplate, digits)
+            if let passcode = meeting.passcode ?? MeetingReference.passcode(from: raw),
+               !passcode.isEmpty {
+                urlText += "&pwd=\(passcode)"
             }
-            logger.notice("Opening Zoom start URL for meeting ending \(String(digits.suffix(4)), privacy: .public)")
+            guard let url = URL(string: urlText) else {
+                return .rejected("could not build the Zoom meeting URL")
+            }
+            // The number is logged in truncated form only.
+            logger.notice("Opening Zoom meeting URL for meeting ending \(String(digits.suffix(4)), privacy: .public)")
             NSWorkspace.shared.open(url)
-            return .requested(method: "zoommtg start URL")
+            return .requested(method: "zoommtg join URL (confno \(digits))")
 
         case .instantMeeting:
             guard let process = zoomProcess(),
@@ -120,6 +151,80 @@ public final class LiveZoomAutomation: ZoomAutomating {
                 return .rejected("AXPress returned \(error.diagnosticDescription)")
             }
         }
+    }
+
+    public func preJoinPreview(for process: ZoomProcess) -> PreJoinPreview? {
+        ZoomAXSupport.preJoinReading(pid: process.pid)?.preview
+    }
+
+    /// Re-reads the preview and re-locates the control by kind before pressing.
+    /// The index path captured earlier is never trusted on its own, and the
+    /// control is only pressed while it is genuinely on.
+    public func pressPreJoinControl(_ control: PreJoinControl) -> PreJoinActionOutcome {
+        guard let process = zoomProcess(),
+              let reading = ZoomAXSupport.preJoinReading(pid: process.pid) else {
+            return .rejected("Zoom's join preview is no longer open")
+        }
+        guard !reading.preview.ambiguousKinds.contains(control.kind) else {
+            return .rejected("several \(control.kind.displayName.lowercased()) controls matched")
+        }
+        guard let fresh = reading.preview.control(for: control.kind) else {
+            return .rejected("the \(control.kind.displayName.lowercased()) control disappeared")
+        }
+        guard fresh.state == .on else {
+            return .rejected("the \(control.kind.displayName.lowercased()) is \(fresh.state.rawValue); refusing to press")
+        }
+
+        switch ZoomAXSupport.pressPreJoinControl(fresh, in: reading) {
+        case .pressed:
+            return .pressed
+        case .verificationFailed(let reason):
+            return .rejected(reason)
+        case .elementUnavailable:
+            return .rejected("the control could not be resolved")
+        case .axError(let error):
+            return .rejected("AXPress returned \(error.diagnosticDescription)")
+        }
+    }
+
+    public func pressPreJoinStart() -> PreJoinActionOutcome {
+        guard let process = zoomProcess(),
+              let reading = ZoomAXSupport.preJoinReading(pid: process.pid) else {
+            return .rejected("Zoom's join preview is no longer open")
+        }
+        guard let start = reading.preview.start else {
+            return .rejected("no Start button was identified")
+        }
+        switch ZoomAXSupport.pressPreJoinStart(start, in: reading) {
+        case .pressed:
+            return .pressed
+        case .verificationFailed(let reason):
+            return .rejected(reason)
+        case .elementUnavailable:
+            return .rejected("the Start button could not be resolved")
+        case .axError(let error):
+            return .rejected("AXPress returned \(error.diagnosticDescription)")
+        }
+    }
+
+    /// Dumps the live preview hierarchy so unknown controls can be identified
+    /// from real data rather than guessed at.
+    public func capturePreJoinDiagnostics(reason: String) {
+        guard let process = zoomProcess(),
+              let reading = ZoomAXSupport.preJoinReading(pid: process.pid) else {
+            SchedulerLog.shared.write("Pre-join diagnostics unavailable (no preview open): \(reason)")
+            return
+        }
+        let text = "Pre-join diagnostics — \(reason)" + "\n"
+            + ZoomAXSupport.describePreJoinForDiagnostics(reading)
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/Zoom Auto Admit/zoom-prejoin-snapshot.log", isDirectory: false)
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? Data(text.utf8).write(to: url, options: .atomic)
+        SchedulerLog.shared.write("Pre-join hierarchy written to \(url.path)")
     }
 
     /// Only ever called from the startup workflow. Auto Admit monitoring never

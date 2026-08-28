@@ -1,20 +1,29 @@
 import AppKit
 import Foundation
+import ZoomAXSupport
 import ZoomAutoAdmitCore
 
-/// Editor for schedules and account profiles.
+/// Editor for schedules and Zoom account profiles.
 ///
 /// Built programmatically so the app stays a single binary with no nib
-/// resources. The window is only ever shown when the user asks for it; the
-/// scheduler itself never needs any UI to run.
-final class SchedulerWindowController: NSWindowController {
+/// resources. Three rules drive the layout: every edit is validated before it
+/// can be saved, saving always produces visible confirmation, and no edit is
+/// ever lost silently.
+final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
     private let coordinator: SchedulerCoordinator
+    private let state: AppState
     private var configuration: SchedulerConfiguration
+    private var isDirty = false
+    private var savedFeedbackWorkItem: DispatchWorkItem?
 
+    private let tabView = NSTabView()
     private let scheduleTable = NSTableView()
     private let profileTable = NSTableView()
+    private let saveButton = NSButton(title: "Save", target: nil, action: nil)
+    private let profileSaveButton = NSButton(title: "Save", target: nil, action: nil)
+    private let runNowButton = NSButton(title: "Run Now", target: nil, action: nil)
 
-    // Schedule fields
+    // Schedule editor fields
     private let nameField = NSTextField()
     private let enabledButton = NSButton(checkboxWithTitle: "Enabled", target: nil, action: nil)
     private let recurrencePopUp = NSPopUpButton()
@@ -29,35 +38,70 @@ final class SchedulerWindowController: NSWindowController {
     private let meetingKindPopUp = NSPopUpButton()
     private let meetingNameField = NSTextField()
     private let meetingIDField = NSTextField()
+    private let muteMicrophoneButton = NSButton(checkboxWithTitle: "Mute microphone", target: nil, action: nil)
+    private let disableCameraButton = NSButton(checkboxWithTitle: "Turn camera off", target: nil, action: nil)
     private let autoAdmitButton = NSButton(checkboxWithTitle: "Enable Auto Admit", target: nil, action: nil)
     private let launchEarlyField = NSTextField()
 
-    // Profile fields
+    // Inline validation labels
+    private let nameError = SchedulerWindowController.errorLabel()
+    private let weekdayError = SchedulerWindowController.errorLabel()
+    private let accountError = SchedulerWindowController.errorLabel()
+    private let meetingNameError = SchedulerWindowController.errorLabel()
+    private let meetingIDError = SchedulerWindowController.errorLabel()
+    /// Shows the meeting number actually parsed out of whatever was typed or
+    /// pasted, so a mistyped link is obvious before the schedule ever runs.
+    private let meetingIDHint: NSTextField = {
+        let field = NSTextField(labelWithString: "")
+        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        field.textColor = .secondaryLabelColor
+        return field
+    }()
+
+    // Profile editor fields
     private let profileNameField = NSTextField()
-    private let profileIdentifierField = NSTextField()
-    private let detectedAccountsPopUp = NSPopUpButton()
+    private let profileAccountPopUp = NSPopUpButton()
+    private let profileManualField = NSTextField()
+    private let profileNameError = SchedulerWindowController.errorLabel()
+    private let profileAccountError = SchedulerWindowController.errorLabel()
+    private let profileHintLabel = NSTextField(labelWithString: "")
+    /// Emails read from Zoom's Switch account menu.
+    private var detectedAccounts: [String] = []
+    private static let manualEntryTitle = "Enter manually…"
+
+    private let scheduleEmptyState = NSStackView()
+    private let profileEmptyState = NSStackView()
+    private let scheduleFormContainer = NSView()
+    private let profileFormContainer = NSView()
 
     private var selectedScheduleIndex: Int? {
-        scheduleTable.selectedRow >= 0 ? scheduleTable.selectedRow : nil
+        scheduleTable.selectedRow >= 0 && configuration.schedules.indices.contains(scheduleTable.selectedRow)
+            ? scheduleTable.selectedRow
+            : nil
     }
 
     private var selectedProfileIndex: Int? {
-        profileTable.selectedRow >= 0 ? profileTable.selectedRow : nil
+        profileTable.selectedRow >= 0 && configuration.accountProfiles.indices.contains(profileTable.selectedRow)
+            ? profileTable.selectedRow
+            : nil
     }
 
-    init(coordinator: SchedulerCoordinator) {
+    init(coordinator: SchedulerCoordinator, state: AppState) {
         self.coordinator = coordinator
+        self.state = state
         self.configuration = coordinator.currentConfiguration
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 620),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Zoom Auto Admit Schedules"
+        window.title = "Zoom Auto Admit"
         window.center()
+        window.setFrameAutosaveName("SchedulerWindow")
         super.init(window: window)
+        window.delegate = self
         window.contentView = makeContentView()
         reloadFromConfiguration()
     }
@@ -68,17 +112,35 @@ final class SchedulerWindowController: NSWindowController {
     }
 
     func present() {
-        configuration = coordinator.currentConfiguration
-        reloadFromConfiguration()
+        if !isDirty {
+            configuration = coordinator.currentConfiguration
+            reloadFromConfiguration()
+        }
+        refreshDetectedAccounts(announce: false)
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
     }
 
+    /// Nothing is lost silently.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard isDirty else { return true }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Discard unsaved changes?"
+        alert.informativeText = "Your edits to schedules or account profiles haven't been saved."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Discard")
+        guard alert.runModal() == .alertSecondButtonReturn else { return false }
+        configuration = coordinator.currentConfiguration
+        isDirty = false
+        reloadFromConfiguration()
+        return true
+    }
+
     // MARK: Layout
 
     private func makeContentView() -> NSView {
-        let tabView = NSTabView()
         tabView.translatesAutoresizingMaskIntoConstraints = false
 
         let schedulesItem = NSTabViewItem(identifier: "schedules")
@@ -87,7 +149,7 @@ final class SchedulerWindowController: NSWindowController {
         tabView.addTabViewItem(schedulesItem)
 
         let profilesItem = NSTabViewItem(identifier: "profiles")
-        profilesItem.label = "Account Profiles"
+        profilesItem.label = "Zoom Accounts"
         profilesItem.view = makeProfilesTab()
         tabView.addTabViewItem(profilesItem)
 
@@ -105,24 +167,31 @@ final class SchedulerWindowController: NSWindowController {
     private func makeSchedulesTab() -> NSView {
         let view = NSView()
 
-        configure(table: scheduleTable, columnTitle: "Schedule")
+        configure(table: scheduleTable, columnTitle: "Schedules")
+        scheduleTable.rowHeight = 78
         scheduleTable.delegate = self
         scheduleTable.dataSource = self
         let scroll = scrollView(for: scheduleTable)
 
-        let addButton = NSButton(title: "+", target: self, action: #selector(addSchedule))
-        let removeButton = NSButton(title: "−", target: self, action: #selector(removeSchedule))
-        let runNowButton = NSButton(title: "Run Now", target: self, action: #selector(runSelectedScheduleNow))
-        runNowButton.toolTip = "Run this schedule immediately, exactly as the scheduler would."
-        let listButtons = NSStackView(views: [addButton, removeButton, runNowButton])
+        let addButton = iconButton("plus", action: #selector(addSchedule), tooltip: "Add a schedule")
+        let removeButton = iconButton("minus", action: #selector(removeSchedule), tooltip: "Delete the selected schedule")
+        let listButtons = NSStackView(views: [addButton, removeButton])
         listButtons.orientation = .horizontal
         listButtons.spacing = 6
+
+        buildEmptyState(
+            scheduleEmptyState,
+            title: "No scheduled meetings",
+            message: "Create a schedule and Zoom Auto Admit can prepare your meetings automatically.",
+            buttonTitle: "Create Schedule",
+            action: #selector(addSchedule)
+        )
 
         recurrencePopUp.addItems(withTitles: ["One time", "Every day", "Selected weekdays"])
         recurrencePopUp.target = self
         recurrencePopUp.action = #selector(recurrenceChanged)
 
-        meetingKindPopUp.addItems(withTitles: ["Meeting ID", "Personal meeting (Zoom menu)"])
+        meetingKindPopUp.addItems(withTitles: ["Meeting ID", "Personal meeting"])
         meetingKindPopUp.target = self
         meetingKindPopUp.action = #selector(meetingKindChanged)
 
@@ -130,71 +199,134 @@ final class SchedulerWindowController: NSWindowController {
         configure(datePicker: startTimePicker, elements: .hourMinute)
         configure(datePicker: endTimePicker, elements: .hourMinute)
 
-        meetingIDField.placeholderString = "123 4567 8901"
+        meetingIDField.placeholderString = "123 4567 8901  or  https://zoom.us/j/1234567890"
         launchEarlyField.placeholderString = "2"
         launchEarlyField.formatter = integerFormatter()
 
+        [nameField, meetingNameField, meetingIDField, launchEarlyField].forEach {
+            $0.delegate = self
+        }
+        [enabledButton, usesEndTimeButton, muteMicrophoneButton, disableCameraButton, autoAdmitButton]
+            .forEach { button in
+                button.target = self
+                button.action = #selector(fieldChanged)
+            }
+        weekdayButtons.forEach {
+            $0.target = self
+            $0.action = #selector(fieldChanged)
+        }
+        [oneTimeDatePicker, startTimePicker, endTimePicker].forEach {
+            $0.target = self
+            $0.action = #selector(fieldChanged)
+        }
+        accountPopUp.target = self
+        accountPopUp.action = #selector(fieldChanged)
+
         let weekdayRow = NSStackView(views: weekdayButtons)
         weekdayRow.orientation = .horizontal
-        weekdayRow.spacing = 4
+        weekdayRow.spacing = 2
 
         let endTimeRow = NSStackView(views: [usesEndTimeButton, endTimePicker])
         endTimeRow.orientation = .horizontal
         endTimeRow.spacing = 8
 
-        let form = NSGridView(views: [
-            [label("Name"), nameField],
-            [NSView(), enabledButton],
-            [label("Repeats"), recurrencePopUp],
-            [label("Weekdays"), weekdayRow],
-            [label("Date"), oneTimeDatePicker],
-            [label("Start time"), startTimePicker],
-            [label("End time"), endTimeRow],
-            [label("Account"), accountPopUp],
-            [label("Meeting type"), meetingKindPopUp],
-            [label("Meeting name"), meetingNameField],
-            [label("Meeting ID"), meetingIDField],
-            [NSView(), autoAdmitButton],
-            [label("Launch Zoom early (min)"), launchEarlyField]
+        let form = NSStackView(views: [
+            section("General", rows: [
+                labelled("Name", nameField, error: nameError),
+                labelled("", enabledButton)
+            ]),
+            section("When", rows: [
+                labelled("Repeat", recurrencePopUp),
+                labelled("Days", weekdayRow, error: weekdayError),
+                labelled("Date", oneTimeDatePicker),
+                labelled("Start time", startTimePicker),
+                labelled("End time", endTimeRow)
+            ]),
+            section("Zoom", rows: [
+                labelled("Account", accountPopUp, error: accountError),
+                labelled("Meeting type", meetingKindPopUp),
+                labelled("Meeting name", meetingNameField, error: meetingNameError),
+                labelled("Meeting ID or link", meetingIDField, error: meetingIDError),
+                labelled("", meetingIDHint)
+            ]),
+            section("Before joining", rows: [
+                labelled("", muteMicrophoneButton),
+                labelled("", disableCameraButton),
+                labelled("", caption("Zoom's real state is checked first; controls are only pressed when needed."))
+            ]),
+            section("After the meeting starts", rows: [
+                labelled("", autoAdmitButton),
+                labelled("Open Zoom early", launchEarlyField, suffix: "minutes")
+            ])
         ])
+        form.orientation = .vertical
+        form.alignment = .leading
+        form.spacing = 18
+
+        let formScroll = NSScrollView()
+        formScroll.hasVerticalScroller = true
+        formScroll.drawsBackground = false
+        formScroll.documentView = form
         form.translatesAutoresizingMaskIntoConstraints = false
-        form.rowSpacing = 8
-        form.columnSpacing = 10
-        form.column(at: 0).xPlacement = .trailing
+        formScroll.translatesAutoresizingMaskIntoConstraints = false
 
-        let saveButton = NSButton(title: "Save", target: self, action: #selector(saveSchedules))
+        scheduleFormContainer.translatesAutoresizingMaskIntoConstraints = false
+        scheduleFormContainer.addSubview(formScroll)
+        NSLayoutConstraint.activate([
+            formScroll.leadingAnchor.constraint(equalTo: scheduleFormContainer.leadingAnchor),
+            formScroll.trailingAnchor.constraint(equalTo: scheduleFormContainer.trailingAnchor),
+            formScroll.topAnchor.constraint(equalTo: scheduleFormContainer.topAnchor),
+            formScroll.bottomAnchor.constraint(equalTo: scheduleFormContainer.bottomAnchor),
+            form.topAnchor.constraint(equalTo: formScroll.contentView.topAnchor),
+            form.leadingAnchor.constraint(equalTo: formScroll.contentView.leadingAnchor)
+        ])
+
+        runNowButton.target = self
+        runNowButton.action = #selector(runSelectedScheduleNow)
+        runNowButton.toolTip = "Run this schedule immediately, exactly as the scheduler would."
+
+        saveButton.target = self
+        saveButton.action = #selector(save)
         saveButton.keyEquivalent = "\r"
-        let revertButton = NSButton(title: "Revert", target: self, action: #selector(revert))
-        let actionRow = NSStackView(views: [revertButton, saveButton])
-        actionRow.orientation = .horizontal
-        actionRow.spacing = 8
 
-        [scroll, listButtons, form, actionRow].forEach {
+        let actionRow = NSStackView(views: [runNowButton, NSView(), saveButton])
+        actionRow.orientation = .horizontal
+        actionRow.spacing = 10
+
+        [scroll, listButtons, scheduleEmptyState, scheduleFormContainer, actionRow].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview($0)
         }
 
         NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            scroll.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
-            scroll.widthAnchor.constraint(equalToConstant: 220),
-            scroll.bottomAnchor.constraint(equalTo: listButtons.topAnchor, constant: -6),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
+            scroll.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            scroll.widthAnchor.constraint(equalToConstant: 260),
+            scroll.bottomAnchor.constraint(equalTo: listButtons.topAnchor, constant: -8),
 
             listButtons.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            listButtons.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+            listButtons.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
 
-            form.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 16),
-            form.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
-            form.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -8),
+            scheduleFormContainer.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 20),
+            scheduleFormContainer.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            scheduleFormContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
+            scheduleFormContainer.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -12),
 
-            actionRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            actionRow.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+            scheduleEmptyState.centerXAnchor.constraint(equalTo: scheduleFormContainer.centerXAnchor),
+            scheduleEmptyState.centerYAnchor.constraint(equalTo: scheduleFormContainer.centerYAnchor),
+            scheduleEmptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 340),
 
-            nameField.widthAnchor.constraint(equalToConstant: 320),
-            meetingNameField.widthAnchor.constraint(equalToConstant: 320),
+            actionRow.leadingAnchor.constraint(equalTo: scheduleFormContainer.leadingAnchor),
+            actionRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
+            actionRow.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
+
+            nameField.widthAnchor.constraint(equalToConstant: 300),
+            meetingNameField.widthAnchor.constraint(equalToConstant: 300),
             meetingIDField.widthAnchor.constraint(equalToConstant: 200),
-            launchEarlyField.widthAnchor.constraint(equalToConstant: 80),
-            accountPopUp.widthAnchor.constraint(equalToConstant: 320)
+            launchEarlyField.widthAnchor.constraint(equalToConstant: 64),
+            accountPopUp.widthAnchor.constraint(equalToConstant: 300),
+            recurrencePopUp.widthAnchor.constraint(equalToConstant: 200),
+            meetingKindPopUp.widthAnchor.constraint(equalToConstant: 200)
         ])
         return view
     }
@@ -202,77 +334,103 @@ final class SchedulerWindowController: NSWindowController {
     private func makeProfilesTab() -> NSView {
         let view = NSView()
 
-        configure(table: profileTable, columnTitle: "Account Profile")
+        configure(table: profileTable, columnTitle: "Zoom Accounts")
+        profileTable.rowHeight = 52
         profileTable.delegate = self
         profileTable.dataSource = self
         let scroll = scrollView(for: profileTable)
 
-        let addButton = NSButton(title: "+", target: self, action: #selector(addProfile))
-        let removeButton = NSButton(title: "−", target: self, action: #selector(removeProfile))
+        let addButton = iconButton("plus", action: #selector(addProfile), tooltip: "Add an account profile")
+        let removeButton = iconButton("minus", action: #selector(removeProfile), tooltip: "Delete the selected profile")
         let listButtons = NSStackView(views: [addButton, removeButton])
         listButtons.orientation = .horizontal
         listButtons.spacing = 6
 
-        profileIdentifierField.placeholderString = "name@example.com"
-        detectedAccountsPopUp.target = self
-        detectedAccountsPopUp.action = #selector(useDetectedAccount)
-
-        let detectButton = NSButton(
-            title: "Read accounts from Zoom",
-            target: self,
-            action: #selector(detectAccounts)
+        buildEmptyState(
+            profileEmptyState,
+            title: "No Zoom accounts configured",
+            message: "Add a saved Zoom account to use scheduled meetings.",
+            buttonTitle: "Read Accounts from Zoom",
+            action: #selector(addProfileFromZoom)
         )
-        detectButton.toolTip = "Reads the saved accounts from Zoom's Switch account menu."
 
-        let explanation = NSTextField(wrappingLabelWithString: """
-        A profile only identifies an account that is already signed in to Zoom. \
-        No password or token is stored. Use the email address: several saved \
-        accounts can share the same display name.
-        """)
-        explanation.textColor = .secondaryLabelColor
-        explanation.font = .systemFont(ofSize: 11)
+        profileNameField.delegate = self
+        profileManualField.delegate = self
+        profileManualField.placeholderString = "name@example.com"
+        profileAccountPopUp.target = self
+        profileAccountPopUp.action = #selector(profileAccountChanged)
 
-        let form = NSGridView(views: [
-            [label("Profile name"), profileNameField],
-            [label("Zoom account"), profileIdentifierField],
-            [label("Detected"), detectedAccountsPopUp],
-            [NSView(), detectButton],
-            [NSView(), explanation]
+        let refreshButton = NSButton(
+            title: "Refresh accounts from Zoom",
+            target: self,
+            action: #selector(refreshAccountsPressed)
+        )
+        profileHintLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        profileHintLabel.textColor = .secondaryLabelColor
+
+        let form = NSStackView(views: [
+            section("Account profile", rows: [
+                labelled("Profile name", profileNameField, error: profileNameError),
+                labelled("Zoom account", profileAccountPopUp, error: profileAccountError),
+                labelled("", profileManualField),
+                labelled("", refreshButton),
+                labelled("", profileHintLabel)
+            ]),
+            caption("""
+            A profile only points at an account that is already signed in to Zoom. \
+            No password or token is stored. The email address is used because \
+            several Zoom accounts can share the same display name.
+            """)
         ])
-        form.translatesAutoresizingMaskIntoConstraints = false
-        form.rowSpacing = 8
-        form.columnSpacing = 10
-        form.column(at: 0).xPlacement = .trailing
+        form.orientation = .vertical
+        form.alignment = .leading
+        form.spacing = 18
 
-        let saveButton = NSButton(title: "Save", target: self, action: #selector(saveSchedules))
-        let actionRow = NSStackView(views: [saveButton])
+        profileSaveButton.target = self
+        profileSaveButton.action = #selector(save)
+        let actionRow = NSStackView(views: [NSView(), profileSaveButton])
         actionRow.orientation = .horizontal
 
-        [scroll, listButtons, form, actionRow].forEach {
+        profileFormContainer.translatesAutoresizingMaskIntoConstraints = false
+        form.translatesAutoresizingMaskIntoConstraints = false
+        profileFormContainer.addSubview(form)
+        NSLayoutConstraint.activate([
+            form.leadingAnchor.constraint(equalTo: profileFormContainer.leadingAnchor),
+            form.topAnchor.constraint(equalTo: profileFormContainer.topAnchor),
+            form.trailingAnchor.constraint(lessThanOrEqualTo: profileFormContainer.trailingAnchor),
+            form.bottomAnchor.constraint(lessThanOrEqualTo: profileFormContainer.bottomAnchor)
+        ])
+
+        [scroll, listButtons, profileEmptyState, profileFormContainer, actionRow].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview($0)
         }
 
         NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            scroll.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
-            scroll.widthAnchor.constraint(equalToConstant: 220),
-            scroll.bottomAnchor.constraint(equalTo: listButtons.topAnchor, constant: -6),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
+            scroll.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            scroll.widthAnchor.constraint(equalToConstant: 260),
+            scroll.bottomAnchor.constraint(equalTo: listButtons.topAnchor, constant: -8),
 
             listButtons.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            listButtons.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+            listButtons.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
 
-            form.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 16),
-            form.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
-            form.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -8),
+            profileFormContainer.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 20),
+            profileFormContainer.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            profileFormContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
+            // Without a bottom anchor this container has no height at all.
+            profileFormContainer.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -12),
 
-            actionRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            actionRow.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+            profileEmptyState.centerXAnchor.constraint(equalTo: profileFormContainer.centerXAnchor),
+            profileEmptyState.centerYAnchor.constraint(equalTo: profileFormContainer.centerYAnchor),
+            profileEmptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 340),
 
-            profileNameField.widthAnchor.constraint(equalToConstant: 320),
-            profileIdentifierField.widthAnchor.constraint(equalToConstant: 320),
-            detectedAccountsPopUp.widthAnchor.constraint(equalToConstant: 320),
-            explanation.widthAnchor.constraint(equalToConstant: 380)
+            actionRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
+            actionRow.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
+
+            profileNameField.widthAnchor.constraint(equalToConstant: 300),
+            profileManualField.widthAnchor.constraint(equalToConstant: 300),
+            profileAccountPopUp.widthAnchor.constraint(equalToConstant: 300)
         ])
         return view
     }
@@ -280,27 +438,41 @@ final class SchedulerWindowController: NSWindowController {
     // MARK: Binding
 
     private func reloadFromConfiguration() {
+        rebuildAccountPopUp()
+        scheduleTable.reloadData()
+        profileTable.reloadData()
+
+        if scheduleTable.selectedRow < 0, !configuration.schedules.isEmpty {
+            scheduleTable.selectRowIndexes([0], byExtendingSelection: false)
+        }
+        if profileTable.selectedRow < 0, !configuration.accountProfiles.isEmpty {
+            profileTable.selectRowIndexes([0], byExtendingSelection: false)
+        }
+
+        loadSelectedSchedule()
+        loadSelectedProfile()
+        updateChrome()
+    }
+
+    private func rebuildAccountPopUp() {
         accountPopUp.removeAllItems()
         for profile in configuration.accountProfiles {
             accountPopUp.addItem(withTitle: "\(profile.name) — \(profile.accountIdentifier)")
         }
         if configuration.accountProfiles.isEmpty {
-            accountPopUp.addItem(withTitle: "No account profiles yet")
+            accountPopUp.addItem(withTitle: "No Zoom accounts yet")
         }
-        scheduleTable.reloadData()
-        profileTable.reloadData()
-        loadSelectedSchedule()
-        loadSelectedProfile()
     }
 
     private func loadSelectedSchedule() {
-        guard let index = selectedScheduleIndex, configuration.schedules.indices.contains(index) else {
-            return
-        }
+        guard let index = selectedScheduleIndex else { return }
         let schedule = configuration.schedules[index]
+
         nameField.stringValue = schedule.name
         enabledButton.state = schedule.isEnabled ? .on : .off
         autoAdmitButton.state = schedule.enablesAutoAdmit ? .on : .off
+        muteMicrophoneButton.state = schedule.mutesMicrophoneBeforeJoining ? .on : .off
+        disableCameraButton.state = schedule.disablesCameraBeforeJoining ? .on : .off
         launchEarlyField.stringValue = String(schedule.launchZoomMinutesEarly)
         startTimePicker.dateValue = date(from: schedule.startTime)
 
@@ -315,11 +487,9 @@ final class SchedulerWindowController: NSWindowController {
         switch schedule.recurrence {
         case .oneTime(let year, let month, let day):
             recurrencePopUp.selectItem(at: 0)
-            var components = DateComponents()
-            components.year = year
-            components.month = month
-            components.day = day
-            oneTimeDatePicker.dateValue = Calendar.current.date(from: components) ?? Date()
+            oneTimeDatePicker.dateValue = Calendar.current.date(
+                from: DateComponents(year: year, month: month, day: day)
+            ) ?? Date()
             setWeekdays([])
         case .daily:
             recurrencePopUp.selectItem(at: 1)
@@ -342,18 +512,19 @@ final class SchedulerWindowController: NSWindowController {
         if let profileIndex = configuration.accountProfiles.firstIndex(where: { $0.id == schedule.accountProfileID }) {
             accountPopUp.selectItem(at: profileIndex)
         }
-
-        updateFieldVisibility()
+        updateChrome()
     }
 
+    /// Reads the form back into the model without touching disk.
     private func storeSelectedSchedule() {
-        guard let index = selectedScheduleIndex, configuration.schedules.indices.contains(index) else {
-            return
-        }
+        guard let index = selectedScheduleIndex else { return }
         var schedule = configuration.schedules[index]
-        schedule.name = nameField.stringValue.isEmpty ? "Untitled schedule" : nameField.stringValue
+
+        schedule.name = nameField.stringValue
         schedule.isEnabled = enabledButton.state == .on
         schedule.enablesAutoAdmit = autoAdmitButton.state == .on
+        schedule.mutesMicrophoneBeforeJoining = muteMicrophoneButton.state == .on
+        schedule.disablesCameraBeforeJoining = disableCameraButton.state == .on
         schedule.launchZoomMinutesEarly = Int(launchEarlyField.stringValue) ?? 2
         schedule.startTime = timeOfDay(from: startTimePicker.dateValue)
         schedule.endTime = usesEndTimeButton.state == .on ? timeOfDay(from: endTimePicker.dateValue) : nil
@@ -375,12 +546,13 @@ final class SchedulerWindowController: NSWindowController {
             schedule.recurrence = .selectedWeekdays(currentWeekdays())
         }
 
-        let meetingName = meetingNameField.stringValue.isEmpty ? schedule.name : meetingNameField.stringValue
         schedule.meeting = MeetingReference(
-            name: meetingName,
+            name: meetingNameField.stringValue,
             kind: meetingKindPopUp.indexOfSelectedItem == 0
                 ? .meetingID(meetingIDField.stringValue)
-                : .instantMeeting
+                : .instantMeeting,
+            // A pasted invite link often carries the passcode with it.
+            passcode: MeetingReference.passcode(from: meetingIDField.stringValue)
         )
 
         let profileIndex = accountPopUp.indexOfSelectedItem
@@ -392,52 +564,267 @@ final class SchedulerWindowController: NSWindowController {
     }
 
     private func loadSelectedProfile() {
-        guard let index = selectedProfileIndex, configuration.accountProfiles.indices.contains(index) else {
-            return
-        }
+        guard let index = selectedProfileIndex else { return }
         let profile = configuration.accountProfiles[index]
         profileNameField.stringValue = profile.name
-        profileIdentifierField.stringValue = profile.accountIdentifier
+        selectAccount(profile.accountIdentifier)
+        updateChrome()
     }
 
     private func storeSelectedProfile() {
-        guard let index = selectedProfileIndex, configuration.accountProfiles.indices.contains(index) else {
+        guard let index = selectedProfileIndex else { return }
+        configuration.accountProfiles[index].name = profileNameField.stringValue
+        configuration.accountProfiles[index].accountIdentifier = currentProfileAccountIdentifier()
+    }
+
+    /// The single source of truth for the stored email, whether it came from the
+    /// detected-accounts popup or from manual entry. The previous version kept
+    /// these as two independent fields, so choosing a detected account left the
+    /// stored value empty and profiles were saved as `personal <>`.
+    private func currentProfileAccountIdentifier() -> String {
+        let title = profileAccountPopUp.titleOfSelectedItem ?? ""
+        if title == Self.manualEntryTitle || title.isEmpty {
+            return profileManualField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return title.replacingOccurrences(of: "● ", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func selectAccount(_ identifier: String) {
+        let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        rebuildProfileAccountPopUp(selecting: trimmed)
+        let isDetected = detectedAccounts.contains { $0.caseInsensitiveCompare(trimmed) == .orderedSame }
+        profileManualField.stringValue = isDetected ? "" : trimmed
+        profileManualField.isHidden = isDetected && !trimmed.isEmpty
+    }
+
+    private func rebuildProfileAccountPopUp(selecting identifier: String) {
+        profileAccountPopUp.removeAllItems()
+        for account in detectedAccounts {
+            profileAccountPopUp.addItem(withTitle: account)
+        }
+        if !identifier.isEmpty,
+           !detectedAccounts.contains(where: { $0.caseInsensitiveCompare(identifier) == .orderedSame }) {
+            profileAccountPopUp.addItem(withTitle: identifier)
+        }
+        profileAccountPopUp.addItem(withTitle: Self.manualEntryTitle)
+
+        if identifier.isEmpty {
+            profileAccountPopUp.selectItem(withTitle: Self.manualEntryTitle)
+        } else {
+            profileAccountPopUp.selectItem(withTitle: identifier)
+            if profileAccountPopUp.indexOfSelectedItem < 0 {
+                profileAccountPopUp.selectItem(withTitle: Self.manualEntryTitle)
+            }
+        }
+    }
+
+    private func refreshDetectedAccounts(announce: Bool) {
+        guard let snapshot = LiveZoomAutomation().readAccountMenu(), !snapshot.entries.isEmpty else {
+            detectedAccounts = []
+            profileHintLabel.stringValue = ZoomAXSupport.zoomApplication() == nil
+                ? "Zoom isn't open. Open Zoom so its saved accounts can be read."
+                : "Zoom's account list couldn't be read."
+            if announce { presentZoomNotRunningIfNeeded() }
+            rebuildProfileAccountPopUp(selecting: currentProfileAccountIdentifier())
             return
         }
-        configuration.accountProfiles[index].name = profileNameField.stringValue.isEmpty
-            ? "Untitled profile"
-            : profileNameField.stringValue
-        configuration.accountProfiles[index].accountIdentifier = profileIdentifierField.stringValue
+
+        detectedAccounts = snapshot.entries.compactMap { $0.email ?? nil }
+        let active = snapshot.activeAccount?.email
+        profileHintLabel.stringValue = active.map { "Signed in to Zoom right now: \($0)" }
+            ?? "\(detectedAccounts.count) accounts found in Zoom."
+        rebuildProfileAccountPopUp(selecting: currentProfileAccountIdentifier())
+    }
+
+    private func presentZoomNotRunningIfNeeded() {
+        guard ZoomAXSupport.zoomApplication() == nil else { return }
+        let alert = NSAlert()
+        alert.messageText = "Zoom isn't open"
+        alert.informativeText = "Open Zoom first so Zoom Auto Admit can read your saved accounts."
+        alert.addButton(withTitle: "Open Zoom")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            _ = LiveZoomAutomation().launchZoom()
+        }
+    }
+
+    // MARK: Validation and chrome
+
+    private func updateChrome() {
+        storeSelectedSchedule()
+        storeSelectedProfile()
+
+        let scheduleIssues = selectedScheduleIndex.map {
+            ScheduleValidation.validate(configuration.schedules[$0], in: configuration)
+        } ?? []
+        show(scheduleIssues, .name, on: nameError)
+        show(scheduleIssues, .weekdays, on: weekdayError)
+        show(scheduleIssues, .account, on: accountError)
+        show(scheduleIssues, .meetingName, on: meetingNameError)
+        show(scheduleIssues, .meetingID, on: meetingIDError)
+
+        let profileIssues = selectedProfileIndex.map {
+            ScheduleValidation.validate(configuration.accountProfiles[$0])
+        } ?? []
+        show(profileIssues, .name, on: profileNameError)
+        show(profileIssues, .accountIdentifier, on: profileAccountError)
+
+        let everythingValid = ScheduleValidation.isValid(configuration)
+        saveButton.isEnabled = isDirty && everythingValid
+        profileSaveButton.isEnabled = isDirty && everythingValid
+        runNowButton.isEnabled = selectedScheduleIndex != nil
+            && scheduleIssues.isEmpty
+            && !coordinator.isWorkflowActive
+
+        updateMeetingIDHint()
+
+        let isOneTime = recurrencePopUp.indexOfSelectedItem == 0
+        let isWeekdays = recurrencePopUp.indexOfSelectedItem == 2
+        oneTimeDatePicker.isEnabled = isOneTime
+        weekdayButtons.forEach { $0.isEnabled = isWeekdays }
+        meetingIDField.isEnabled = meetingKindPopUp.indexOfSelectedItem == 0
+        endTimePicker.isEnabled = usesEndTimeButton.state == .on
+
+        let hasSchedules = !configuration.schedules.isEmpty
+        scheduleEmptyState.isHidden = hasSchedules
+        scheduleFormContainer.isHidden = !hasSchedules
+        let hasProfiles = !configuration.accountProfiles.isEmpty
+        profileEmptyState.isHidden = hasProfiles
+        profileFormContainer.isHidden = !hasProfiles
+    }
+
+    private func show<Field: Equatable>(
+        _ issues: [ValidationIssue<Field>],
+        _ field: Field,
+        on label: NSTextField
+    ) {
+        if let issue = issues.first(where: { $0.field == field }) {
+            label.stringValue = "⚠ \(issue.message)"
+            label.isHidden = false
+        } else {
+            label.stringValue = ""
+            label.isHidden = true
+        }
+    }
+
+    private func updateMeetingIDHint() {
+        guard meetingKindPopUp.indexOfSelectedItem == 0 else {
+            meetingIDHint.stringValue = "Zoom's own Start meeting command is used."
+            return
+        }
+        let raw = meetingIDField.stringValue
+        let digits = MeetingReference.normalizedMeetingID(raw)
+        guard !digits.isEmpty else {
+            meetingIDHint.stringValue = ""
+            return
+        }
+        var text = "Will open meeting \(MeetingReference.groupedMeetingID(digits))"
+        if MeetingReference.passcode(from: raw) != nil {
+            text += " with its passcode"
+        }
+        meetingIDHint.stringValue = text
+    }
+
+    private func markDirty() {
+        isDirty = true
+        updateChrome()
     }
 
     // MARK: Actions
 
+    @objc private func save() {
+        storeSelectedSchedule()
+        storeSelectedProfile()
+
+        guard ScheduleValidation.isValid(configuration) else {
+            updateChrome()
+            NSSound.beep()
+            return
+        }
+
+        coordinator.update(configuration: configuration)
+        isDirty = false
+        scheduleTable.reloadData()
+        profileTable.reloadData()
+        rebuildAccountPopUp()
+        updateChrome()
+        showSavedFeedback()
+    }
+
+    /// Subtle inline confirmation rather than a modal alert.
+    private func showSavedFeedback() {
+        savedFeedbackWorkItem?.cancel()
+        for button in [saveButton, profileSaveButton] {
+            button.title = "✓ Saved"
+            button.isEnabled = false
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            for button in [self.saveButton, self.profileSaveButton] {
+                button.title = "Save"
+            }
+            self.updateChrome()
+        }
+        savedFeedbackWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8, execute: work)
+    }
+
     @objc private func addSchedule() {
         storeSelectedSchedule()
-        let profileID = configuration.accountProfiles.first?.id ?? UUID()
         let schedule = ZoomSchedule(
             name: "New schedule",
             recurrence: .selectedWeekdays([.saturday]),
             startTime: TimeOfDay(hour: 18, minute: 0),
-            accountProfileID: profileID,
-            meeting: MeetingReference(name: "New meeting", kind: .meetingID(""))
+            accountProfileID: configuration.accountProfiles.first?.id ?? UUID(),
+            meeting: MeetingReference(name: "New meeting", kind: .meetingID("")),
+            enablesAutoAdmit: SchedulerDefaults.enablesAutoAdmit,
+            mutesMicrophoneBeforeJoining: SchedulerDefaults.mutesMicrophone,
+            disablesCameraBeforeJoining: SchedulerDefaults.disablesCamera
         )
         configuration.schedules.append(schedule)
         scheduleTable.reloadData()
         scheduleTable.selectRowIndexes([configuration.schedules.count - 1], byExtendingSelection: false)
+        loadSelectedSchedule()
+        markDirty()
+        window?.makeFirstResponder(nameField)
     }
 
     @objc private func removeSchedule() {
-        guard let index = selectedScheduleIndex, configuration.schedules.indices.contains(index) else { return }
+        guard let index = selectedScheduleIndex else { return }
+        let schedule = configuration.schedules[index]
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete “\(schedule.name)”?"
+        alert.informativeText = "This schedule will no longer run."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+
         configuration.schedules.remove(at: index)
         scheduleTable.reloadData()
+        loadSelectedSchedule()
+        markDirty()
     }
 
     @objc private func runSelectedScheduleNow() {
         storeSelectedSchedule()
-        guard let index = selectedScheduleIndex, configuration.schedules.indices.contains(index) else { return }
-        coordinator.update(configuration: configuration)
-        coordinator.runNow(configuration.schedules[index])
+        guard let index = selectedScheduleIndex else { return }
+        let schedule = configuration.schedules[index]
+        guard ScheduleValidation.isValid(schedule, in: configuration) else {
+            updateChrome()
+            NSSound.beep()
+            return
+        }
+
+        if isDirty { save() }
+        // Disabled immediately so it cannot be double-pressed while the
+        // workflow spins up.
+        runNowButton.isEnabled = false
+        if !coordinator.runNow(schedule) {
+            updateChrome()
+        }
     }
 
     @objc private func addProfile() {
@@ -447,66 +834,168 @@ final class SchedulerWindowController: NSWindowController {
         )
         profileTable.reloadData()
         profileTable.selectRowIndexes([configuration.accountProfiles.count - 1], byExtendingSelection: false)
+        refreshDetectedAccounts(announce: false)
+        loadSelectedProfile()
+        markDirty()
+        window?.makeFirstResponder(profileNameField)
+    }
+
+    @objc private func addProfileFromZoom() {
+        refreshDetectedAccounts(announce: true)
+        guard let first = detectedAccounts.first else { return }
+        configuration.accountProfiles.append(
+            ZoomAccountProfile(name: suggestedProfileName(for: first), accountIdentifier: first)
+        )
+        profileTable.reloadData()
+        profileTable.selectRowIndexes([configuration.accountProfiles.count - 1], byExtendingSelection: false)
+        loadSelectedProfile()
+        markDirty()
+    }
+
+    private func suggestedProfileName(for email: String) -> String {
+        String(email.split(separator: "@").first ?? "Zoom account").capitalized
     }
 
     @objc private func removeProfile() {
-        guard let index = selectedProfileIndex, configuration.accountProfiles.indices.contains(index) else { return }
+        guard let index = selectedProfileIndex else { return }
+        let profile = configuration.accountProfiles[index]
+        let usedBy = configuration.schedules.filter { $0.accountProfileID == profile.id }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete “\(profile.name)”?"
+        alert.informativeText = usedBy.isEmpty
+            ? "This account profile will be removed."
+            : "\(usedBy.count) schedule(s) use this account and will need a new one."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+
         configuration.accountProfiles.remove(at: index)
         profileTable.reloadData()
-        reloadFromConfiguration()
+        rebuildAccountPopUp()
+        loadSelectedProfile()
+        markDirty()
     }
 
-    @objc private func detectAccounts() {
-        detectedAccountsPopUp.removeAllItems()
-        guard let snapshot = LiveZoomAutomation().readAccountMenu(), !snapshot.entries.isEmpty else {
-            detectedAccountsPopUp.addItem(withTitle: "Zoom's account menu could not be read")
-            return
+    @objc private func refreshAccountsPressed() {
+        refreshDetectedAccounts(announce: true)
+        updateChrome()
+    }
+
+    @objc private func profileAccountChanged() {
+        let isManual = profileAccountPopUp.titleOfSelectedItem == Self.manualEntryTitle
+        profileManualField.isHidden = !isManual
+        if isManual { window?.makeFirstResponder(profileManualField) }
+        markDirty()
+    }
+
+    @objc private func recurrenceChanged() { markDirty() }
+    @objc private func meetingKindChanged() { markDirty() }
+    @objc private func fieldChanged() { markDirty() }
+
+    // MARK: Small builders
+
+    private static func errorLabel() -> NSTextField {
+        let field = NSTextField(labelWithString: "")
+        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        field.textColor = .systemRed
+        field.isHidden = true
+        return field
+    }
+
+    private func section(_ title: String, rows: [NSView]) -> NSView {
+        let heading = NSTextField(labelWithString: title.uppercased())
+        heading.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
+        heading.textColor = .secondaryLabelColor
+
+        let stack = NSStackView(views: [heading] + rows)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        return stack
+    }
+
+    private func labelled(
+        _ title: String,
+        _ control: NSView,
+        suffix: String? = nil,
+        error: NSTextField? = nil
+    ) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        label.alignment = .right
+        label.textColor = .labelColor
+        label.widthAnchor.constraint(equalToConstant: 130).isActive = true
+
+        var rowViews: [NSView] = [label, control]
+        if let suffix {
+            let suffixLabel = NSTextField(labelWithString: suffix)
+            suffixLabel.textColor = .secondaryLabelColor
+            rowViews.append(suffixLabel)
         }
-        for entry in snapshot.entries {
-            let marker = entry.isActive ? "● " : "  "
-            detectedAccountsPopUp.addItem(withTitle: marker + (entry.email ?? entry.rawTitle))
-        }
+        let row = NSStackView(views: rowViews)
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 10
+
+        guard let error else { return row }
+
+        let spacer = NSView()
+        spacer.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        let errorRow = NSStackView(views: [spacer, error])
+        errorRow.orientation = .horizontal
+        errorRow.spacing = 0
+
+        let stack = NSStackView(views: [row, errorRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        return stack
     }
 
-    @objc private func useDetectedAccount() {
-        let title = detectedAccountsPopUp.titleOfSelectedItem ?? ""
-        let cleaned = title.replacingOccurrences(of: "●", with: "").trimmingCharacters(in: .whitespaces)
-        guard cleaned.contains("@") else { return }
-        profileIdentifierField.stringValue = cleaned
-        storeSelectedProfile()
-        profileTable.reloadData()
+    private func caption(_ text: String) -> NSTextField {
+        let field = NSTextField(wrappingLabelWithString: text)
+        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        field.textColor = .secondaryLabelColor
+        field.preferredMaxLayoutWidth = 420
+        return field
     }
 
-    @objc private func saveSchedules() {
-        storeSelectedSchedule()
-        storeSelectedProfile()
-        coordinator.update(configuration: configuration)
-        reloadFromConfiguration()
+    private func buildEmptyState(
+        _ stack: NSStackView,
+        title: String,
+        message: String,
+        buttonTitle: String,
+        action: Selector
+    ) {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.alignment = .center
+
+        let messageLabel = NSTextField(wrappingLabelWithString: message)
+        messageLabel.textColor = .secondaryLabelColor
+        messageLabel.alignment = .center
+        messageLabel.preferredMaxLayoutWidth = 320
+
+        let button = NSButton(title: buttonTitle, target: self, action: action)
+
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        [titleLabel, messageLabel, button].forEach { stack.addArrangedSubview($0) }
     }
 
-    @objc private func revert() {
-        configuration = coordinator.currentConfiguration
-        reloadFromConfiguration()
+    private func iconButton(_ symbol: String, action: Selector, tooltip: String) -> NSButton {
+        let button = NSButton(
+            image: NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)
+                ?? NSImage(size: NSSize(width: 12, height: 12)),
+            target: self,
+            action: action
+        )
+        button.bezelStyle = .smallSquare
+        button.toolTip = tooltip
+        return button
     }
-
-    @objc private func recurrenceChanged() {
-        updateFieldVisibility()
-    }
-
-    @objc private func meetingKindChanged() {
-        updateFieldVisibility()
-    }
-
-    private func updateFieldVisibility() {
-        let isOneTime = recurrencePopUp.indexOfSelectedItem == 0
-        let isWeekdays = recurrencePopUp.indexOfSelectedItem == 2
-        oneTimeDatePicker.isEnabled = isOneTime
-        weekdayButtons.forEach { $0.isEnabled = isWeekdays }
-        meetingIDField.isEnabled = meetingKindPopUp.indexOfSelectedItem == 0
-        endTimePicker.isEnabled = usesEndTimeButton.state == .on
-    }
-
-    // MARK: Helpers
 
     private func currentWeekdays() -> Set<Weekday> {
         var days: Set<Weekday> = []
@@ -534,10 +1023,6 @@ final class SchedulerWindowController: NSWindowController {
         return TimeOfDay(hour: components.hour ?? 0, minute: components.minute ?? 0)
     }
 
-    private func label(_ text: String) -> NSTextField {
-        NSTextField(labelWithString: text)
-    }
-
     private func integerFormatter() -> NumberFormatter {
         let formatter = NumberFormatter()
         formatter.allowsFloats = false
@@ -555,10 +1040,11 @@ final class SchedulerWindowController: NSWindowController {
     private func configure(table: NSTableView, columnTitle: String) {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
         column.title = columnTitle
-        column.width = 200
+        column.width = 240
         table.addTableColumn(column)
-        table.headerView = NSTableHeaderView()
-        table.usesAlternatingRowBackgroundColors = true
+        table.headerView = nil
+        table.style = .inset
+        table.usesAlternatingRowBackgroundColors = false
     }
 
     private func scrollView(for table: NSTableView) -> NSScrollView {
@@ -570,26 +1056,106 @@ final class SchedulerWindowController: NSWindowController {
     }
 }
 
+// MARK: - Table data
+
 extension SchedulerWindowController: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int {
         tableView === scheduleTable ? configuration.schedules.count : configuration.accountProfiles.count
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let text: String
         if tableView === scheduleTable {
             guard configuration.schedules.indices.contains(row) else { return nil }
             let schedule = configuration.schedules[row]
-            let marker = schedule.isEnabled ? "●" : "○"
-            text = "\(marker) \(schedule.name) — \(schedule.recurrence.displayText) \(schedule.startTime.displayText)"
-        } else {
-            guard configuration.accountProfiles.indices.contains(row) else { return nil }
-            let profile = configuration.accountProfiles[row]
-            text = "\(profile.name) — \(profile.accountIdentifier)"
+            let account = configuration.profile(for: schedule)?.name ?? "No account"
+            let level: StatusLevel = schedule.isEnabled ? .normal : .neutral
+            return card(
+                title: schedule.name,
+                subtitle: "\(schedule.recurrence.displayText) · \(schedule.startTime.displayText)",
+                detail: "\(account) · \(schedule.meeting.summaryText)",
+                badge: badgeText(for: schedule),
+                dotColor: level.color
+            )
         }
-        let field = NSTextField(labelWithString: text)
-        field.lineBreakMode = .byTruncatingTail
-        return field
+
+        guard configuration.accountProfiles.indices.contains(row) else { return nil }
+        let profile = configuration.accountProfiles[row]
+        let valid = ScheduleValidation.isValid(profile)
+        return card(
+            title: profile.name,
+            subtitle: profile.accountIdentifier.isEmpty ? "No account selected" : profile.accountIdentifier,
+            detail: nil,
+            badge: nil,
+            dotColor: valid ? StatusLevel.normal.color : StatusLevel.error.color
+        )
+    }
+
+    private func card(
+        title: String,
+        subtitle: String,
+        detail: String?,
+        badge: String?,
+        dotColor: NSColor
+    ) -> NSView {
+        let dot = NSTextField(labelWithString: "●")
+        dot.textColor = dotColor
+        dot.font = .systemFont(ofSize: 9)
+        dot.setContentHuggingPriority(.required, for: .horizontal)
+
+        let titleLabel = rowLabel(title, size: NSFont.systemFontSize, weight: .semibold, color: .labelColor)
+
+        let titleRow = NSStackView(views: [dot, titleLabel])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 6
+
+        var views: [NSView] = [
+            titleRow,
+            rowLabel(subtitle, size: NSFont.smallSystemFontSize, weight: .regular, color: .secondaryLabelColor)
+        ]
+        if let detail {
+            views.append(
+                rowLabel(detail, size: NSFont.smallSystemFontSize, weight: .regular, color: .secondaryLabelColor)
+            )
+        }
+        if let badge {
+            views.append(
+                rowLabel(badge, size: NSFont.smallSystemFontSize, weight: .regular, color: .tertiaryLabelColor)
+            )
+        }
+
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 3
+        stack.edgeInsets = NSEdgeInsets(top: 7, left: 6, bottom: 7, right: 6)
+        return stack
+    }
+
+    /// Row labels must shrink and truncate rather than push the row wider,
+    /// otherwise long meeting names get clipped mid-word.
+    private func rowLabel(
+        _ text: String,
+        size: CGFloat,
+        weight: NSFont.Weight,
+        color: NSColor
+    ) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: size, weight: weight)
+        label.textColor = color
+        label.lineBreakMode = .byTruncatingTail
+        label.cell?.truncatesLastVisibleLine = true
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return label
+    }
+
+    private func badgeText(for schedule: ZoomSchedule) -> String {
+        var parts = [schedule.enablesAutoAdmit ? "Auto Admit On" : "Auto Admit Off"]
+        if schedule.mutesMicrophoneBeforeJoining { parts.append("Mic off") }
+        if schedule.disablesCameraBeforeJoining { parts.append("Camera off") }
+        if !schedule.isEnabled { parts.append("Disabled") }
+        return parts.joined(separator: " · ")
     }
 
     func tableViewSelectionIsChanging(_ notification: Notification) {
@@ -608,5 +1174,11 @@ extension SchedulerWindowController: NSTableViewDataSource, NSTableViewDelegate 
         } else {
             loadSelectedProfile()
         }
+    }
+}
+
+extension SchedulerWindowController: NSTextFieldDelegate {
+    func controlTextDidChange(_ notification: Notification) {
+        markDirty()
     }
 }

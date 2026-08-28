@@ -33,7 +33,7 @@ public final class ZoomWorkflowRunner {
         }
 
         // 1. Zoom must be running.
-        guard let process = ensureZoomRunning() else {
+        guard var process = ensureZoomRunning() else {
             return fail(state == .launchingZoom ? .zoomWouldNotLaunch : .zoomUIUnavailable)
         }
 
@@ -56,6 +56,15 @@ public final class ZoomWorkflowRunner {
             break
         }
 
+        // Switching accounts makes Zoom sign out and back in, which restarts the
+        // process. Everything after this point must address the *new* pid:
+        // holding the old one sends every later Accessibility call to a dead
+        // process, which looks exactly like "the meeting never started".
+        guard let settled = waitForStableZoomProcess(previous: process) else {
+            return fail(.zoomUIUnavailable)
+        }
+        process = settled
+
         // 4. Meeting.
         transition(to: .findingMeeting, detail: schedule.meeting.displayText)
         if case .meetingID(let raw) = schedule.meeting.kind,
@@ -64,6 +73,10 @@ public final class ZoomWorkflowRunner {
         }
 
         transition(to: .startingMeeting, detail: "Starting \(schedule.meeting.name)")
+        // Baseline of Zoom's meeting-sized windows, so a window that appears in
+        // response to the start request can be recognised even when it opens on
+        // another Space where Accessibility cannot follow it.
+        let windowsBeforeStart = automation.meetingWindowSignature(for: process)
         // Starting a meeting is the one step that genuinely needs Zoom in front.
         automation.activateZoom()
         switch automation.startMeeting(schedule.meeting) {
@@ -73,15 +86,50 @@ public final class ZoomWorkflowRunner {
             transition(to: .verifyingMeeting, detail: "Start requested via \(method)")
         }
 
-        // 5. A successful press proves nothing; wait for real meeting evidence.
+        // 5. Zoom usually shows a join preview before the meeting begins. It is
+        // not guaranteed — the preview can be switched off in Zoom's settings —
+        // so this waits for *either* the preview or a meeting, and only handles
+        // the preview if one actually appears. The wait is short because a
+        // preview that is coming appears within a second or two; spending the
+        // full meeting timeout here only delays the real verification.
+        _ = waitUntil(timeout: timeouts.preJoinAppearance) { [automation] in
+            automation.preJoinPreview(for: process) != nil
+                || automation.meetingPresence(for: process).state == .active
+        }
+
+        if automation.meetingPresence(for: process).state != .active,
+           automation.preJoinPreview(for: process) != nil {
+            if case .failure(let failure) = handlePreJoinPreview(schedule: schedule) {
+                return fail(failure)
+            }
+        }
+
+        // 6. A successful press proves nothing; wait for real meeting evidence.
+        //
+        // Two independent kinds of evidence are accepted, because Accessibility
+        // alone is not enough: when the meeting window opens on another Desktop
+        // it never enters Zoom's AXWindows, and waiting only for an AX title
+        // reports "the meeting did not start" for a meeting that is plainly
+        // running. The window server still sees that window.
+        var verifiedBy: String?
         let started = waitUntil(timeout: timeouts.meetingStart) { [automation] in
-            automation.meetingPresence(for: process).state == .active
+            let presence = automation.meetingPresence(for: process)
+            if presence.state == .active {
+                verifiedBy = presence.evidenceDescription
+                return true
+            }
+            let newWindows = automation.meetingWindowSignature(for: process)
+                .subtracting(windowsBeforeStart)
+            if !newWindows.isEmpty {
+                verifiedBy = "new-meeting-window(\(newWindows.count))"
+                return true
+            }
+            return false
         }
         guard started else {
             return fail(.meetingNotVerified)
         }
-        let presence = automation.meetingPresence(for: process)
-        transition(to: .verifyingMeeting, detail: "Meeting verified (\(presence.evidenceDescription))")
+        transition(to: .meetingStarted, detail: "Meeting verified (\(verifiedBy ?? "unknown"))")
 
         guard schedule.enablesAutoAdmit else {
             transition(to: .completed, detail: "Meeting started; Auto Admit off for this schedule")
@@ -90,9 +138,126 @@ public final class ZoomWorkflowRunner {
         }
 
         transition(to: .monitoringWaitingRoom, detail: "Handing over to Auto Admit")
+        transition(to: .autoAdmitStarted, detail: "Auto Admit active")
         transition(to: .completed, detail: "Workflow completed")
         state = .completed
         return .completed(autoAdmitStarted: true)
+    }
+
+    // MARK: Pre-join preview
+
+    /// Ensures the microphone and camera are off before the meeting is started.
+    ///
+    /// Zoom labels these controls with the action they perform rather than the
+    /// state they are in, so every decision here is made from the control's own
+    /// accessible text and re-checked after pressing. Anything that cannot be
+    /// read confidently aborts the workflow: the failure mode of guessing is an
+    /// open microphone in a live meeting.
+    private func handlePreJoinPreview(schedule: ZoomSchedule) -> Result<Void, ZoomWorkflowFailure> {
+        transition(to: .preJoinPreviewDetected, detail: "Pre-join preview detected")
+
+        if schedule.mutesMicrophoneBeforeJoining {
+            if case .failure(let failure) = ensureDeviceOff(
+                kind: .microphone,
+                working: .ensuringMicrophoneOff,
+                verified: .microphoneOffVerified
+            ) {
+                return .failure(failure)
+            }
+        } else {
+            observer(.preJoinPreviewDetected, "Microphone: left as-is for this schedule")
+        }
+
+        if schedule.disablesCameraBeforeJoining {
+            if case .failure(let failure) = ensureDeviceOff(
+                kind: .camera,
+                working: .ensuringCameraOff,
+                verified: .cameraOffVerified
+            ) {
+                return .failure(failure)
+            }
+        } else {
+            observer(.preJoinPreviewDetected, "Camera: left as-is for this schedule")
+        }
+
+        // Only now is Start allowed to be pressed.
+        guard let preview = currentPreview() else {
+            return .failure(.preJoinPreviewLost)
+        }
+        guard let start = preview.start else {
+            automation.capturePreJoinDiagnostics(reason: "Start button not identified")
+            return .failure(.preJoinStartNotFound)
+        }
+        guard start.enabled else {
+            return .failure(.preJoinStartRejected("the Start button is disabled"))
+        }
+
+        observer(.pressingStart, "Start button found")
+        transition(to: .pressingStart, detail: "Pressing Start")
+        switch automation.pressPreJoinStart() {
+        case .pressed:
+            return .success(())
+        case .rejected(let reason):
+            automation.capturePreJoinDiagnostics(reason: "Start press rejected: \(reason)")
+            return .failure(.preJoinStartRejected(reason))
+        }
+    }
+
+    private func ensureDeviceOff(
+        kind: PreJoinControlKind,
+        working: ZoomWorkflowState,
+        verified verifiedState: ZoomWorkflowState
+    ) -> Result<Void, ZoomWorkflowFailure> {
+        guard let preview = currentPreview() else {
+            return .failure(.preJoinPreviewLost)
+        }
+        guard !preview.ambiguousKinds.contains(kind) else {
+            automation.capturePreJoinDiagnostics(reason: "\(kind.displayName) ambiguous")
+            return .failure(.preJoinControlAmbiguous(kind))
+        }
+        guard let control = preview.control(for: kind) else {
+            automation.capturePreJoinDiagnostics(reason: "\(kind.displayName) control not found")
+            return .failure(.preJoinControlNotFound(kind))
+        }
+
+        switch control.state {
+        case .off:
+            observer(working, "\(kind.displayName) state: OFF — no action")
+            transition(to: verifiedState, detail: "\(kind.displayName) already off")
+            return .success(())
+
+        case .unknown:
+            automation.capturePreJoinDiagnostics(reason: "\(kind.displayName) state unknown")
+            return .failure(.preJoinStateUnknown(kind))
+
+        case .on:
+            observer(working, "\(kind.displayName) state: ON")
+            transition(to: working, detail: "Turning \(kind.displayName.lowercased()) OFF")
+            switch automation.pressPreJoinControl(control) {
+            case .rejected(let reason):
+                automation.capturePreJoinDiagnostics(reason: "\(kind.displayName) press rejected: \(reason)")
+                return .failure(.preJoinPressRejected(kind, reason))
+            case .pressed:
+                break
+            }
+
+            // Re-read rather than assume the press did what it claimed.
+            let becameOff = waitUntil(timeout: timeouts.accountSwitch) { [weak self] in
+                self?.currentPreview()?.control(for: kind)?.state == .off
+            }
+            guard becameOff else {
+                automation.capturePreJoinDiagnostics(reason: "\(kind.displayName) did not turn off")
+                return .failure(.preJoinNotVerified(kind))
+            }
+            observer(verifiedState, "\(kind.displayName) state verified: OFF")
+            transition(to: verifiedState, detail: "\(kind.displayName) off")
+            return .success(())
+        }
+    }
+
+    private func currentPreview() -> PreJoinPreview? {
+        guard let process = automation.zoomProcess() else { return nil }
+        return automation.preJoinPreview(for: process)
     }
 
     // MARK: Steps
@@ -150,6 +315,37 @@ public final class ZoomWorkflowRunner {
         }
         guard appeared, let launched else { return nil }
         return waitForZoomUI(process: launched)
+    }
+
+    /// Re-resolves Zoom after the account step and waits for it to settle.
+    ///
+    /// Returns the current process once it answers its account menu again. When
+    /// the pid changed, Zoom restarted for the account switch and needs a moment
+    /// before it will act on a start request at all.
+    private func waitForStableZoomProcess(previous: ZoomProcess) -> ZoomProcess? {
+        var resolved: ZoomProcess?
+        let ready = waitUntil(timeout: timeouts.zoomUIReady) { [automation] in
+            guard let current = automation.zoomProcess() else { return false }
+            guard let snapshot = automation.readAccountMenu(), !snapshot.entries.isEmpty else {
+                return false
+            }
+            resolved = current
+            return true
+        }
+        guard ready, let resolved else { return nil }
+
+        if resolved.pid != previous.pid {
+            observer(
+                .verifyingAccount,
+                "Zoom restarted for the account switch (pid \(previous.pid) → \(resolved.pid)); reconnecting"
+            )
+            // A client that has just relaunched will silently drop a start
+            // request, so wait until it reports itself ready to start one.
+            _ = waitUntil(timeout: timeouts.zoomUIReady) { [automation] in
+                automation.isReadyToStartMeeting(for: resolved)
+            }
+        }
+        return resolved
     }
 
     /// "Ready" means Zoom answers the menu that the workflow actually needs.

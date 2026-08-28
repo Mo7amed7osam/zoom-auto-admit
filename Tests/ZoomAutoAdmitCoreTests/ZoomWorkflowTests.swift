@@ -1,4 +1,5 @@
 import ApplicationServices
+import CoreGraphics
 import Foundation
 import XCTest
 import ZoomAXSupport
@@ -249,6 +250,58 @@ final class ZoomWorkflowTests: XCTestCase {
         XCTAssertFalse(states.contains(.monitoringWaitingRoom))
     }
 
+    /// Regression test for a live failure: switching accounts makes Zoom sign
+    /// out and back in, which restarts the process under a new pid. The workflow
+    /// kept using the pid captured before the switch, so every later
+    /// Accessibility call went to a dead process and a perfectly good start
+    /// request was reported as "The meeting did not start".
+    func testZoomRestartingForTheAccountSwitchIsFollowedToItsNewProcess() {
+        let automation = FakeZoomAutomation(activeEmail: otherEmail)
+        automation.activeEmailAfterSelection = depiEmail
+        automation.pidAfterAccountSwitch = 5150
+        let target = profile(depiEmail)
+
+        let (result, _) = run(automation, profile: target, schedule: schedule(profile: target))
+
+        XCTAssertEqual(result, .completed(autoAdmitStarted: true))
+        XCTAssertEqual(
+            automation.processUsedForStart?.pid,
+            5150,
+            "The meeting must be started against the process Zoom restarted into"
+        )
+    }
+
+    /// Regression test for a live failure: the meeting really started, but its
+    /// window opened on another Desktop where Accessibility cannot see it, so
+    /// the workflow reported "The meeting did not start" for a running meeting
+    /// and never handed over to Auto Admit.
+    func testMeetingOnAnotherDesktopIsVerifiedByItsNewWindow() {
+        let automation = FakeZoomAutomation(activeEmail: depiEmail)
+        // Accessibility never sees the meeting: only the home window is listed.
+        automation.meetingBecomesActive = false
+        automation.windowIDsAfterStart = [1, 99]
+        let target = profile(depiEmail)
+
+        let (result, states) = run(automation, profile: target, schedule: schedule(profile: target))
+
+        XCTAssertEqual(result, .completed(autoAdmitStarted: true))
+        XCTAssertTrue(states.contains(.meetingStarted))
+        XCTAssertTrue(states.contains(.monitoringWaitingRoom))
+    }
+
+    /// The converse: nothing new appeared and Accessibility saw nothing either,
+    /// so the failure must still be reported rather than assumed successful.
+    func testNoNewWindowAndNoAccessibilityEvidenceStillFails() {
+        let automation = FakeZoomAutomation(activeEmail: depiEmail)
+        automation.meetingBecomesActive = false
+        automation.windowIDsAfterStart = [1]
+        let target = profile(depiEmail)
+
+        let (result, _) = run(automation, profile: target, schedule: schedule(profile: target))
+
+        XCTAssertEqual(result, .failed(.meetingNotVerified))
+    }
+
     func testUntrustedAccessibilityStopsImmediately() {
         let automation = FakeZoomAutomation(activeEmail: depiEmail)
         automation.trusted = false
@@ -354,6 +407,21 @@ private final class FakeZoomAutomation: ZoomAutomating {
 
     private var activeEmail: String
     private var meetingStarted = false
+    var showsPreJoinPreview = false
+    var previewOpen = false
+    var microphonePresent = true
+    var cameraPresent = true
+    var startPresent = true
+    var microphoneState: ToggleState = .on
+    var cameraState: ToggleState = .on
+    var microphoneTogglesCorrectly = true
+    var cameraTogglesCorrectly = true
+    var ambiguousKinds: Set<PreJoinControlKind> = []
+    var preJoinPressOutcome: PreJoinActionOutcome?
+    var startPressOutcome: PreJoinActionOutcome?
+    private(set) var pressedPreJoinControls: [PreJoinControlKind] = []
+    private(set) var startPressCount = 0
+    private(set) var capturedDiagnostics: [String] = []
     private var clock = Date(timeIntervalSince1970: 1_800_000_000)
 
     /// Mirrors the five accounts captured from the live Zoom client, including
@@ -408,10 +476,38 @@ private final class FakeZoomAutomation: ZoomAutomating {
         if let activeEmailAfterSelection {
             activeEmail = activeEmailAfterSelection
         }
+        // Zoom relaunches under a new pid to complete an account switch.
+        if let pidAfterAccountSwitch {
+            process = ZoomProcess(pid: pidAfterAccountSwitch, bundleIdentifier: "us.zoom.xos")
+        }
         return .pressed
     }
 
+    /// Off-Space meetings are modelled by reporting a new window-server window
+    /// while Accessibility still sees nothing.
+    var meetingWindowIDs: Set<CGWindowID> = [1]
+    /// Window-server state once the start request has been made.
+    var windowIDsAfterStart: Set<CGWindowID>?
+    var pidAfterAccountSwitch: pid_t?
+    private(set) var processUsedForStart: ZoomProcess?
+
+    func meetingWindowSignature(for process: ZoomProcess) -> Set<CGWindowID> {
+        meetingWindowIDs
+    }
+
+    func isReadyToStartMeeting(for process: ZoomProcess) -> Bool { true }
+
     func meetingPresence(for process: ZoomProcess) -> MeetingPresence {
+        // A pid that no longer exists can answer nothing at all.
+        guard process.pid == self.process?.pid else {
+            return ZoomAXSupport.classifyMeetingPresence(
+                axWindowTitles: [],
+                hasMeetingStructure: false,
+                axHierarchyAvailable: false,
+                location: .notFound
+            )
+        }
+        processUsedForStart = process
         let active = meetingActiveFromTheStart || meetingStarted
         return ZoomAXSupport.classifyMeetingPresence(
             axWindowTitles: active ? ["Zoom Meeting"] : ["Zoom Workplace"],
@@ -427,8 +523,78 @@ private final class FakeZoomAutomation: ZoomAutomating {
             return meetingStartOutcome
         }
         startedMeetings.append(meeting)
-        if meetingBecomesActive { meetingStarted = true }
+        if let windowIDsAfterStart { meetingWindowIDs = windowIDsAfterStart }
+        if showsPreJoinPreview {
+            previewOpen = true
+        } else if meetingBecomesActive {
+            meetingStarted = true
+        }
         return meetingStartOutcome ?? .requested(method: "test")
+    }
+
+    func preJoinPreview(for process: ZoomProcess) -> PreJoinPreview? {
+        guard previewOpen else { return nil }
+        return ZoomAXSupport.PreJoinPreview(
+            windowTitle: "Mohamed Hosam's Zoom Meeting",
+            windowIndexPath: [],
+            microphone: microphoneControl,
+            camera: cameraControl,
+            start: startControl,
+            ambiguousKinds: ambiguousKinds
+        )
+    }
+
+    func pressPreJoinControl(_ control: PreJoinControl) -> PreJoinActionOutcome {
+        if let outcome = preJoinPressOutcome, case .rejected = outcome { return outcome }
+        pressedPreJoinControls.append(control.kind)
+        switch control.kind {
+        case .microphone:
+            if microphoneTogglesCorrectly { microphoneState = .off }
+        case .camera:
+            if cameraTogglesCorrectly { cameraState = .off }
+        }
+        return .pressed
+    }
+
+    func pressPreJoinStart() -> PreJoinActionOutcome {
+        if let outcome = startPressOutcome, case .rejected = outcome { return outcome }
+        startPressCount += 1
+        previewOpen = false
+        if meetingBecomesActive { meetingStarted = true }
+        return .pressed
+    }
+
+    func capturePreJoinDiagnostics(reason: String) {
+        capturedDiagnostics.append(reason)
+    }
+
+    private var microphoneControl: PreJoinControl? {
+        guard microphonePresent else { return nil }
+        return ZoomAXSupport.PreJoinControl(
+            kind: .microphone,
+            state: microphoneState,
+            matchedText: microphoneState == .on ? "Mute" : "Unmute",
+            evidence: "AXDescription",
+            enabled: true,
+            indexPath: [0]
+        )
+    }
+
+    private var cameraControl: PreJoinControl? {
+        guard cameraPresent else { return nil }
+        return ZoomAXSupport.PreJoinControl(
+            kind: .camera,
+            state: cameraState,
+            matchedText: cameraState == .on ? "Stop Video" : "Start Video",
+            evidence: "AXDescription",
+            enabled: true,
+            indexPath: [1]
+        )
+    }
+
+    private var startControl: ZoomAXSupport.PreJoinStartControl? {
+        guard startPresent else { return nil }
+        return ZoomAXSupport.PreJoinStartControl(matchedText: "Start", enabled: true, indexPath: [2])
     }
 
     /// Bringing Zoom forward also brings its Space forward, which is what makes

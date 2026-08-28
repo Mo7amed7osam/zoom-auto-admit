@@ -25,6 +25,7 @@ final class SchedulerCoordinator {
     private var scheduler: SchedulerService!
     private var configuration: SchedulerConfiguration
     private var isWorkflowRunning = false
+    private let workflowLock = NSLock()
     /// Schedules whose Auto Admit run was started by the scheduler, so an end
     /// time only ever stops monitoring the scheduler itself turned on.
     private var schedulerStartedMonitoring = Set<UUID>()
@@ -96,12 +97,37 @@ final class SchedulerCoordinator {
     }
 
     /// Runs a schedule immediately, for testing a configuration without waiting.
-    func runNow(_ schedule: ZoomSchedule) {
+    /// Returns false when a workflow is already running, so the caller can keep
+    /// its Run Now control disabled instead of queueing a second startup.
+    @discardableResult
+    func runNow(_ schedule: ZoomSchedule) -> Bool {
         guard let profile = configuration.profile(for: schedule) else {
-            notify(title: "Schedule has no account profile", body: schedule.name)
-            return
+            DispatchQueue.main.async { [state] in
+                state.setRunOutcome(.failed(
+                    title: "Schedule has no account profile",
+                    detail: "Choose a Zoom account for “\(schedule.name)” first."
+                ))
+            }
+            return false
+        }
+        guard !isWorkflowActive else {
+            schedulerLog.write("Run Now ignored for \(schedule.name): a workflow is already running")
+            return false
         }
         handleFire(schedule: schedule, profile: profile, occurrence: Date())
+        return true
+    }
+
+    /// True from the moment a workflow is queued until it finishes.
+    var isWorkflowActive: Bool {
+        workflowLock.lock()
+        defer { workflowLock.unlock() }
+        return isWorkflowRunning
+    }
+
+    /// The soonest upcoming schedule, for the menu's Next meeting section.
+    func nextScheduled() -> (schedule: ZoomSchedule, date: Date)? {
+        scheduler.nextScheduled()
     }
 
     func refreshNextScheduleSummary() {
@@ -125,15 +151,27 @@ final class SchedulerCoordinator {
     // MARK: Workflow
 
     private func handleFire(schedule: ZoomSchedule, profile: ZoomAccountProfile, occurrence: Date) {
+        workflowLock.lock()
+        guard !isWorkflowRunning else {
+            workflowLock.unlock()
+            // Two schedules landing together must not race two startups.
+            schedulerLog.write("Skipped \(schedule.name): another workflow is already running")
+            return
+        }
+        isWorkflowRunning = true
+        workflowLock.unlock()
+
+        DispatchQueue.main.async { [state] in
+            state.setRunOutcome(.running(scheduleName: schedule.name))
+        }
+
         workflowQueue.async { [weak self] in
             guard let self else { return }
-            guard !self.isWorkflowRunning else {
-                // Two schedules landing together must not race two startups.
-                self.schedulerLog.write("Skipped \(schedule.name): another workflow is already running")
-                return
+            defer {
+                self.workflowLock.lock()
+                self.isWorkflowRunning = false
+                self.workflowLock.unlock()
             }
-            self.isWorkflowRunning = true
-            defer { self.isWorkflowRunning = false }
 
             self.schedulerLog.write("──────── Schedule triggered: \(schedule.name) ────────")
             self.schedulerLog.write("Occurrence: \(occurrence)")
@@ -160,31 +198,12 @@ final class SchedulerCoordinator {
         schedule: ZoomSchedule,
         profile: ZoomAccountProfile
     ) {
-        let text: String?
-        switch workflowState {
-        case .idle, .completed, .failed:
-            text = nil
-        case .scheduleTriggered:
-            text = "Starting \(schedule.name)…"
-        case .launchingZoom:
-            text = "Launching Zoom…"
-        case .waitingForZoom:
-            text = "Waiting for Zoom UI…"
-        case .checkingAccount:
-            text = "Checking Zoom account…"
-        case .switchingAccount:
-            text = "Switching to \(profile.name) account…"
-        case .verifyingAccount:
-            text = "Verifying \(profile.name) account…"
-        case .findingMeeting:
-            text = "Finding \(schedule.meeting.name)…"
-        case .startingMeeting:
-            text = "Starting \(schedule.meeting.name)…"
-        case .verifyingMeeting:
-            text = "Verifying meeting started…"
-        case .monitoringWaitingRoom:
-            text = "Meeting started — Auto Admit active"
-        }
+        // Internal state names stay in the log; the menu gets plain language.
+        let text = WorkflowPresentation.progressText(
+            for: workflowState,
+            schedule: schedule,
+            profile: profile
+        )
         DispatchQueue.main.async { [state] in state.setWorkflowStatus(text) }
     }
 
@@ -198,34 +217,32 @@ final class SchedulerCoordinator {
                 DispatchQueue.main.async { [startAutoAdmit] in startAutoAdmit() }
                 schedulerLog.write("Auto Admit started via the existing monitor")
             }
-            notify(title: "Scheduled Zoom meeting started", body: schedule.meeting.name)
+            DispatchQueue.main.async { [state] in
+                state.setRunOutcome(.succeeded(
+                    meetingName: schedule.meeting.name,
+                    autoAdmitActive: autoAdmitStarted
+                ))
+            }
+            notify(
+                title: "\(schedule.meeting.name) started",
+                body: autoAdmitStarted
+                    ? "Auto Admit is active."
+                    : "Auto Admit is off for this schedule."
+            )
 
         case .failed(let failure):
+            let copy = WorkflowPresentation.copy(for: failure)
             schedulerLog.write("Workflow FAILED for \(schedule.name): \(failure.message)")
-            notify(title: notificationTitle(for: failure), body: failure.message)
+            DispatchQueue.main.async { [state] in
+                state.setRunOutcome(.failed(title: copy.title, detail: copy.detail))
+            }
+            notify(title: copy.title, body: copy.detail)
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [state] in
-            state.setWorkflowStatus(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [state] in
+            state.clearTransientRunState()
         }
         refreshNextScheduleSummary()
-    }
-
-    private func notificationTitle(for failure: ZoomWorkflowFailure) -> String {
-        switch failure {
-        case .accountNotFound, .accountAmbiguous, .accountSwitchRejected, .accountSwitchNotVerified:
-            return "Failed to switch Zoom account"
-        case .meetingNotConfigured, .meetingStartRejected, .meetingNotVerified:
-            return "Scheduled meeting not started"
-        case .anotherMeetingActive:
-            return "Another Zoom meeting is already active"
-        case .meetingStateUnknown:
-            return "Zoom's meeting state could not be determined"
-        case .accessibilityNotTrusted:
-            return "Accessibility permission required"
-        case .zoomWouldNotLaunch, .zoomUIUnavailable, .accountMenuUnavailable:
-            return "Zoom was not ready"
-        }
     }
 
     private func handleMonitoringEnd(schedule: ZoomSchedule) {

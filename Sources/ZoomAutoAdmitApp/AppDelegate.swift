@@ -11,10 +11,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController!
     private var schedulerCoordinator: SchedulerCoordinator!
     private var schedulerWindowController: SchedulerWindowController?
+    private var settingsWindowController: SettingsWindowController?
     private var accessibilityCheckGeneration: UInt64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        // Never displayed for an accessory app, but required for ⌘C/⌘V to reach
+        // text fields in the app's own windows.
+        MainMenu.install()
 
         let enabled: Bool
         if defaults.object(forKey: "monitoringEnabled") == nil {
@@ -54,6 +58,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             state.setMonitoringEnabled(false)
         }
+        if CommandLine.arguments.contains("--run-first-schedule") {
+            // Testing aid: runs the first configured schedule immediately.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self,
+                      let schedule = self.schedulerCoordinator.currentConfiguration.schedules.first else {
+                    return
+                }
+                self.schedulerCoordinator.runNow(schedule)
+            }
+        }
         if CommandLine.arguments.contains(PreJoinCapture.launchArgument) {
             let opensPreview = !CommandLine.arguments.contains("--no-open")
             DispatchQueue.global(qos: .userInitiated).async {
@@ -90,31 +104,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController.onCheckAgain = { [weak self] in
             self?.checkAccessibilityFromScratch(source: "Check Again")
         }
-        menuBarController.onOpenDiagnosticsLog = {
-            NSWorkspace.shared.open(AccessibilityDiagnosticLog.shared.fileURL)
-        }
-        menuBarController.launchAtLoginEnabled = {
-            SMAppService.mainApp.status == .enabled
-        }
-        menuBarController.onToggleLaunchAtLogin = { [weak self] in
-            self?.toggleLaunchAtLogin()
-        }
         menuBarController.onOpenSchedules = { [weak self] in
             self?.openSchedulerWindow()
         }
-        menuBarController.onOpenSchedulerLog = { [weak self] in
-            guard let self else { return }
-            NSWorkspace.shared.open(self.schedulerCoordinator.logFileURL)
-        }
-        menuBarController.onCaptureZoomUI = { [weak self] in
-            self?.captureZoomUISnapshot()
+        menuBarController.onOpenSettings = { [weak self] in
+            self?.openSettingsWindow()
         }
         menuBarController.onRunSchedule = { [weak self] schedule in
             self?.schedulerCoordinator.runNow(schedule)
         }
+        menuBarController.onShowRunDetails = { [weak self] in
+            self?.showRunDetails()
+        }
+        menuBarController.schedulerConfiguration = { [weak self] in
+            self?.schedulerCoordinator.currentConfiguration ?? SchedulerConfiguration()
+        }
+        menuBarController.nextScheduled = { [weak self] in
+            self?.schedulerCoordinator.nextScheduled()
+        }
+        menuBarController.isWorkflowRunning = { [weak self] in
+            self?.schedulerCoordinator.isWorkflowActive ?? false
+        }
         menuBarController.onQuit = { [weak self] in
+            self?.schedulerCoordinator.stop()
             self?.monitor.stop()
             NSApp.terminate(nil)
+        }
+    }
+
+    private func openSettingsWindow() {
+        if settingsWindowController == nil {
+            let controller = SettingsWindowController()
+            controller.onOpenAccessibilitySettings = { [weak self] in self?.openAccessibilitySettings() }
+            controller.onCheckAccessibility = { [weak self] in
+                self?.checkAccessibilityFromScratch(source: "Check Again")
+            }
+            controller.onCaptureZoomUI = { [weak self] in self?.captureZoomUISnapshot() }
+            controller.onOpenAccessibilityLog = {
+                NSWorkspace.shared.open(AccessibilityDiagnosticLog.shared.fileURL)
+            }
+            controller.onOpenSchedulerLog = { [weak self] in
+                guard let self else { return }
+                NSWorkspace.shared.open(self.schedulerCoordinator.logFileURL)
+            }
+            settingsWindowController = controller
+        }
+        settingsWindowController?.present()
+    }
+
+    /// Full failure text plus the log, for when the menu summary isn't enough.
+    private func showRunDetails() {
+        guard case .failed(let title, let detail) = state.runOutcome else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: "Close")
+        alert.addButton(withTitle: "Open Log")
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSWorkspace.shared.open(schedulerCoordinator.logFileURL)
         }
     }
 
@@ -177,7 +226,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openSchedulerWindow() {
         if schedulerWindowController == nil {
-            schedulerWindowController = SchedulerWindowController(coordinator: schedulerCoordinator)
+            schedulerWindowController = SchedulerWindowController(
+                coordinator: schedulerCoordinator,
+                state: state
+            )
         }
         schedulerWindowController?.present()
     }

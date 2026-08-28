@@ -86,6 +86,24 @@ public extension ZoomAXSupport {
         )
     }
 
+    /// IDs of Zoom windows big enough to be a meeting window.
+    ///
+    /// Used only as a *before and after* comparison around a start request. A
+    /// window that appears in direct response to asking Zoom to start a meeting
+    /// is real evidence; the same heuristic applied to a static snapshot is not,
+    /// which is why it is never used on its own to claim a meeting is running.
+    ///
+    /// This works where Accessibility cannot: the window server still reports
+    /// windows that live on another Space, and window *geometry* — unlike window
+    /// names — needs no Screen Recording permission.
+    static func meetingWindowSignature(pid: pid_t) -> Set<CGWindowID> {
+        Set(
+            cgWindows(ownerPID: pid)
+                .filter { $0.layer == 0 && $0.hasSensibleDimensions && $0.alpha > 0.01 }
+                .map(\.windowID)
+        )
+    }
+
     static func meetingPresence(pid: pid_t, bundleIdentifier: String) -> MeetingPresence {
         let scan = scanZoom(pid: pid)
         let located = locateMeeting(pid: pid, bundleIdentifier: bundleIdentifier, scan: scan)
