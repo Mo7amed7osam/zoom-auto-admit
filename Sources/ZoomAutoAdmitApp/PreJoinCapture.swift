@@ -33,17 +33,35 @@ enum PreJoinCapture {
         ZoomAXSupport.collectDiagnosticAttributes = true
         defer { ZoomAXSupport.collectDiagnosticAttributes = previousCollect }
 
+        // Always bring Zoom forward. The preview is routinely placed on another
+        // Space, where AXWindows cannot see it at all; activating Zoom brings
+        // that Space forward and makes the window readable.
+        NSRunningApplication(processIdentifier: process.pid)?.activate()
+        Thread.sleep(forTimeInterval: 1.5)
+
         if openPreview {
-            // Zoom needs to be frontmost for its menu to act, and the preview
-            // opens on Zoom's own Space.
-            NSRunningApplication(processIdentifier: process.pid)?.activate()
-            Thread.sleep(forTimeInterval: 1.0)
-            guard let reading = ZoomAXSupport.zoomMenuBarReading(pid: process.pid) else {
-                write(lines + ["Zoom's menu bar could not be read."])
-                return
+            // The home window's own button is used rather than the application
+            // menu: AXPress on a menu item blocks for as long as the menu stays
+            // open, which stalled an earlier attempt at this capture.
+            let application = ZoomAXSupport.freshZoomApplicationElement(pid: process.pid, messagingTimeout: 5)
+            let windows = ZoomAXSupport.windowsResult(of: application).windows
+            var pressed = false
+            for window in windows {
+                let tree = ZoomAXSupport.buildTree(from: window, maxDepth: 14, maxChildren: 200)
+                guard let button = findButton(describedAs: "start new meeting", in: tree) else { continue }
+                guard ZoomAXSupport.isEnabled(button.element),
+                      ZoomAXSupport.actionNames(of: button.element).contains(ZoomAXSupport.pressAction) else {
+                    continue
+                }
+                let result = ZoomAXSupport.press(button.element)
+                lines.append("Pressed 'Start new meeting' button: \(result.diagnosticDescription)")
+                pressed = result == .success
+                break
             }
-            let outcome = ZoomAXSupport.pressApplicationMenuItem(titled: "Start meeting", in: reading)
-            lines.append("Pressed Zoom menu 'Start meeting': \(outcome)")
+            if !pressed {
+                lines.append("Could not find an enabled 'Start new meeting' button.")
+            }
+            Thread.sleep(forTimeInterval: 2.5)
         }
 
         let deadline = Date().addingTimeInterval(timeout)
@@ -69,17 +87,18 @@ enum PreJoinCapture {
                 }
             }
 
+            var seenTitles: [String] = []
             for candidate in candidates {
                 let title = ZoomAXSupport.windowTitle(candidate.element)
+                seenTitles.append("\(candidate.label)=\(String(reflecting: title))")
+
+                // Cheap title check first. Building the home window's tree is
+                // expensive enough to stall the whole capture if done per poll.
+                guard ZoomAXSupport.normalized(title) != "zoom workplace" else { continue }
+
                 let tree = ZoomAXSupport.buildTree(from: candidate.element, maxDepth: 18, maxChildren: 300)
                 let snapshot = ZoomAXSupport.snapshot(from: tree)
                 let preview = ZoomAXSupport.preJoinPreview(inWindow: snapshot, windowIndexPath: [])
-
-                // A window that is neither the home window nor an in-meeting
-                // window is worth dumping even if the matcher did not recognise
-                // it; that is precisely the case that needs new vocabulary.
-                let isHomeWindow = ZoomAXSupport.normalized(title) == "zoom workplace"
-                guard preview != nil || !isHomeWindow else { continue }
 
                 lines.append("")
                 lines.append("===== CANDIDATE \(candidate.label) title=\(String(reflecting: title)) poll=\(pollCount) =====")
@@ -90,7 +109,12 @@ enum PreJoinCapture {
                 captured = true
             }
 
-            if !captured { Thread.sleep(forTimeInterval: 1.0) }
+            if !captured {
+                if pollCount == 1 || pollCount % 5 == 0 {
+                    lines.append("poll \(pollCount): windows \(seenTitles.joined(separator: ", "))")
+                }
+                Thread.sleep(forTimeInterval: 1.0)
+            }
         }
 
         if !captured {
@@ -100,6 +124,20 @@ enum PreJoinCapture {
         lines.append("Start was deliberately NOT pressed; no meeting was created by this capture.")
         write(lines)
         logger.notice("Pre-join capture finished captured=\(captured)")
+    }
+
+    private static func findButton(
+        describedAs normalizedDescription: String,
+        in node: ZoomAXSupport.Node
+    ) -> ZoomAXSupport.Node? {
+        let matches = [node.description, node.title, node.help]
+            .compactMap { $0 }
+            .contains { ZoomAXSupport.normalized($0) == normalizedDescription }
+        if node.role == "AXButton", matches { return node }
+        for child in node.children {
+            if let found = findButton(describedAs: normalizedDescription, in: child) { return found }
+        }
+        return nil
     }
 
     private static func describe(_ preview: ZoomAXSupport.PreJoinPreview) -> String {

@@ -18,7 +18,7 @@ cd "$project_root"
 # meeting genuinely need the foreground) and the schedules editor window (the
 # user opened it). Everything on the monitoring path must stay focus-free.
 forbidden_in_app='\.activate\(|setFrontmost|kAXRaiseAction|kAXFrontmostAttribute|\.unhide\(\)|CGEventPost'
-activation_allowlist='Sources/ZoomAutoAdmitCore/Workflow/LiveZoomAutomation.swift|Sources/ZoomAutoAdmitApp/SchedulerWindowController.swift'
+activation_allowlist='Sources/ZoomAutoAdmitCore/Workflow/LiveZoomAutomation.swift|Sources/ZoomAutoAdmitApp/SchedulerWindowController.swift|Sources/ZoomAutoAdmitApp/PreJoinCapture.swift'
 if grep -rnE "$forbidden_in_app" Sources/ZoomAutoAdmitApp Sources/ZoomAutoAdmitCore \
     | grep -vE "$activation_allowlist" \
     | grep -v "^\s*//" \
