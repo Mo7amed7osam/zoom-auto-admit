@@ -1,0 +1,131 @@
+Zoom Auto Admit — Accessibility inspector
+Requested max depth: 14
+Accessibility trusted: true
+Zoom process: pid=94829, bundle=us.zoom.xos
+
+=== WINDOW 0: (untitled window) ===
+AXWindow/ path=axwindow[0] description="eyouth Coordinator entered the waiting room, Close, Admit, press CMD + U to manage the waiting room" actions=[AXRaise]
+  [No guarded Waiting Room Admit candidate found in this window]
+
+=== WINDOW 1: Zoom Meeting ===
+AXWindow/AXStandardWindow path=axwindow[0] title="Zoom Meeting" actions=[AXRaise]
+  AXTabGroup path=axwindow[0]/axtabgroup[0] description="eyouth coordinator, Computer audio muted"
+    AXStaticText path=axwindow[0]/axtabgroup[0]/axstatictext[0] value="eyouth coordinator"
+    AXButton path=axwindow[0]/axtabgroup[0]/axbutton[1] description="View eyouth coordinator's profile" enabled=true actions=[AXPress]
+  AXScrollArea path=axwindow[0]/axscrollarea[1] actions=[AXScrollLeftByPage,AXScrollRightByPage,AXScrollUpByPage,AXScrollDownByPage]
+    AXOutline path=axwindow[0]/axscrollarea[1]/axoutline[0] description="Participants list"
+      AXRow/AXTableRow path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[0]
+        AXCell path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[0]/axcell[0] identifier="ZMHCTableItemType_WAITINGLIST_Group" actions=[AXPress]
+          AXStaticText path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[0]/axcell[0]/axstatictext[0] value="Waiting room (1)" WAITING-ROOM-MARKER
+          AXButton path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[0]/axcell[0]/axbutton[1] description="Message" enabled=true actions=[AXPress]
+          AXImage path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[0]/axcell[0]/aximage[2] title="" description=""
+      AXRow/AXTableRow path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[1]
+        AXCell path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[1]/axcell[0] description="eyouth Coordinator selected, press space to admit" identifier="ZMHCTableItemType_WAITINGLIST" actions=[AXPress]
+          AXStaticText path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[1]/axcell[0]/axstatictext[0] value="eyouth Coordinator (Guest)"
+          AXMenuButton path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[1]/axcell[0]/axmenubutton[1] description="More options for eyouth Coordinator, collapsed" actions=[AXPress]
+          AXButton path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[1]/axcell[0]/axbutton[2] description="Admit" enabled=true actions=[AXPress]
+      AXRow/AXTableRow path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[2]
+        AXCell path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[2]/axcell[0] identifier="ZMHCTableItemType_PANELIST_Group" actions=[AXPress]
+          AXStaticText path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[2]/axcell[0]/axstatictext[0] value="Joined (1)"
+          AXImage path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[2]/axcell[0]/aximage[1] title="" description=""
+      AXRow/AXTableRow path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[3]
+        AXCell path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[3]/axcell[0] identifier="ZMHCTableItemType_PANELIST" actions=[AXPress]
+          AXStaticText path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[3]/axcell[0]/axstatictext[0] value="eyouth coordinator (Host, me)"
+          AXMenuButton path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[3]/axcell[0]/axmenubutton[1] description="More options for eyouth coordinator, collapsed" actions=[AXPress]
+          AXButton path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[3]/axcell[0]/axbutton[2] description="Start video" enabled=true actions=[AXPress]
+          AXButton path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[3]/axcell[0]/axbutton[3] description="Unmute" enabled=true actions=[AXPress]
+          AXImage path=axwindow[0]/axscrollarea[1]/axoutline[0]/axrow[3]/axcell[0]/aximage[4] title="" description="Recording to cloud"
+  AXButton path=axwindow[0]/axbutton[2] description="Invite" enabled=true actions=[AXPress]
+  AXButton path=axwindow[0]/axbutton[3] description="Mute all" enabled=true actions=[AXPress]
+  AXButton path=axwindow[0]/axbutton[4] description="More options to manage all participants" enabled=true actions=[AXPress]
+  AXUnknown path=axwindow[0]/axunknown[5] description="Participants (2)" actions=[AXPress]
+    AXButton path=axwindow[0]/axunknown[5]/axbutton[0] title="Close" description="Button" enabled=true actions=[AXPress]
+    AXButton path=axwindow[0]/axunknown[5]/axbutton[1] title="Pop out" description="Button" enabled=true actions=[AXPress]
+    AXStaticText path=axwindow[0]/axunknown[5]/axstatictext[2] value="Participants (2)"
+  AXSplitter path=axwindow[0]/axsplitter[6] value="0.7533068783068783"
+  AXButton path=axwindow[0]/axbutton[7] description="My connected time is 02:38" enabled=true actions=[AXPress]
+  AXButton/AXCloseButton path=axwindow[0]/axbutton[8] enabled=false actions=[AXPress]
+  AXButton/AXMinimizeButton path=axwindow[0]/axbutton[9] enabled=false actions=[AXPress]
+  AXButton/AXFullScreenButton path=axwindow[0]/axbutton[10] enabled=false actions=[AXPress]
+  [No guarded Waiting Room Admit candidate found in this window]
+
+=== WINDOW 2: Zoom Workplace ===
+AXWindow/AXStandardWindow path=axwindow[0] title="Zoom Workplace" actions=[AXRaise]
+   path=axwindow[0]/[0] description=""
+  AXButton path=axwindow[0]/axbutton[1] description="Back in Chat(⌘ + left bracket)" enabled=true actions=[AXPress]
+  AXButton path=axwindow[0]/axbutton[2] description="Forward in Chat(⌘ + right bracket)" enabled=false actions=[AXPress]
+  AXButton path=axwindow[0]/axbutton[3] description="History" enabled=true actions=[AXPress]
+  AXButton path=axwindow[0]/axbutton[4] description="Search (⌘E)  ⌘E" enabled=true actions=[AXPress]
+  AXButton path=axwindow[0]/axbutton[5] description="Create new" enabled=true actions=[AXPress]
+  AXButton path=axwindow[0]/axbutton[6] description="Open activity center, New messages" enabled=true actions=[AXPress]
+  AXButton path=axwindow[0]/axbutton[7] title="" description="Zoom, eyouth coordinator, In a Zoom Meeting, Pro account" enabled=true actions=[AXPress]
+  AXButton path=axwindow[0]/axbutton[8] description="Calendar always shows on the home screen." enabled=false actions=[AXPress]
+  AXGroup path=axwindow[0]/axgroup[9] description="Navigation tabs"
+    AXUnknown path=axwindow[0]/axgroup[9]/axunknown[0] description="Home, selected, 1 of 6" value="Home, selected" actions=[AXShowMenu,AXPress]
+      AXButton path=axwindow[0]/axgroup[9]/axunknown[0]/axbutton[0] title="" enabled=true actions=[AXPress]
+    AXUnknown path=axwindow[0]/axgroup[9]/axunknown[1] description="ZoomMate, 2 of 6" value="ZoomMate" actions=[AXShowMenu,AXPress]
+      AXButton path=axwindow[0]/axgroup[9]/axunknown[1]/axbutton[0] title="" enabled=true actions=[AXPress]
+    AXUnknown path=axwindow[0]/axgroup[9]/axunknown[2] description="Meetings, 3 of 6" value="Meetings" actions=[AXShowMenu,AXPress]
+      AXButton path=axwindow[0]/axgroup[9]/axunknown[2]/axbutton[0] title="" enabled=true actions=[AXPress]
+    AXUnknown path=axwindow[0]/axgroup[9]/axunknown[3] description="Chat, 4 of 6" value="Chat" actions=[AXShowMenu,AXPress]
+      AXButton path=axwindow[0]/axgroup[9]/axunknown[3]/axbutton[0] title="" enabled=true actions=[AXPress]
+    AXUnknown path=axwindow[0]/axgroup[9]/axunknown[4] description="Hub, 5 of 6" value="Hub" actions=[AXShowMenu,AXPress]
+      AXButton path=axwindow[0]/axgroup[9]/axunknown[4]/axbutton[0] title="" enabled=true actions=[AXPress]
+    AXUnknown path=axwindow[0]/axgroup[9]/axunknown[5] description="More, 6 of 6" value="More" actions=[AXShowMenu,AXPress]
+      AXButton path=axwindow[0]/axgroup[9]/axunknown[5]/axbutton[0] title="" enabled=true actions=[AXPress]
+  AXButton path=axwindow[0]/axbutton[10] title="Settings" enabled=true actions=[AXPress]
+  AXStaticText path=axwindow[0]/axstatictext[11] value="Settings"
+  AXSplitGroup path=axwindow[0]/axsplitgroup[12]
+    AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]
+      AXStaticText path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axstatictext[0] value="4:47 PM"
+      AXStaticText path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axstatictext[1] value="Friday, 28 August"
+      AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[2]
+        AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[2]/axbutton[0] title="" description="Back to meeting" identifier="91500B57-C45B-429A-B218-248AE8AD3F8D" enabled=true actions=[AXPress]
+      AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[3]
+        AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[3]/axbutton[0] title="" description="Join meeting" identifier="517E0EAF-4FA5-4214-B927-61DAA74996C1" enabled=false actions=[AXPress]
+      AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[4]
+        AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[4]/axbutton[0] title="" description="Schedule meeting" identifier="A689A991-025B-417A-AF1B-77FDDE0A795F" enabled=true actions=[AXPress]
+      AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[5]
+        AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[5]/axbutton[0] title="" description="Share screen" identifier="11C86C3A-487D-4BA9-A7A8-B71E5205863B" enabled=false actions=[AXPress]
+      AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[6]
+        AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[6]/axbutton[0] title="" description="My Notes" identifier="FEA2776C-90C5-469F-BB5B-8BDE2AAED563" enabled=true actions=[AXPress]
+      AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]
+        AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]
+          AXScrollArea path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0] title="" description="" value="" actions=[AXShowMenu,AXScrollToVisible]
+            AXWebArea path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0] title="" description="Zoom Calendar" value="" actions=[AXShowMenu,AXScrollToVisible]
+              AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axbutton[0] title="Create event" description="Create event" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+              AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axgroup[1] title="" description="" value="" actions=[AXShowMenu,AXScrollToVisible]
+                AXPopUpButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axgroup[1]/axpopupbutton[0] title="Select calendar date: Today, Aug 28" description="Select calendar date: Today, Aug 28" value="" actions=[AXPress,AXShowMenu,AXScrollToVisible]
+              AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axbutton[2] title="Today" description="Today" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+              AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axbutton[3] title="Previous" description="Previous" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+              AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axbutton[4] title="Next" description="Next" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+              AXGroup/AXApplicationGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axgroup[5] title="" description="" value="" actions=[AXShowMenu,AXScrollToVisible]
+                AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axgroup[5]/axgroup[0] title="" description="" value="" actions=[AXPress,AXShowMenu,AXScrollToVisible]
+                  AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axgroup[5]/axgroup[0]/axbutton[0] title="More options" description="More options" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+              AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axgroup[6] title="" description="" value="" actions=[AXShowMenu,AXScrollToVisible]
+                AXStaticText path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axgroup[6]/axstatictext[0] title="" description="" value="No meetings scheduled." actions=[AXShowMenu,AXScrollToVisible]
+              AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axbutton[7] title="Schedule a meeting" description="Schedule a meeting" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+              AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axbutton[8] title="Recurring(1)" description="Recurring(1)" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+              AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axbutton[9] title="Open recordings" description="Open recordings" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+              AXGroup/AXApplicationGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axgroup[10] title="Recurring (1)" description="Recurring (1)" value="" actions=[AXShowMenu,AXScrollToVisible]
+                AXStaticText path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axgroup[10]/axstatictext[0] title="" description="" value="Recurring (1)" actions=[AXShowMenu,AXScrollToVisible]
+              AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axbutton[11] title="Close recurring event" description="Close recurring event" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+              AXList/AXContentList path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axlist[12] title="Recurring(1)" description="Recurring(1)" value="" actions=[AXShowMenu,AXScrollToVisible]
+                AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axlist[12]/axgroup[0] title="CAI5_IND1_G2 Host: eyouth coordinator press Tab for more options, press Enter for detailed page" description="CAI5_IND1_G2 Host: eyouth coordinator press Tab for more options, press Enter for detailed page" value="" actions=[AXPress,AXShowMenu,AXScrollToVisible]
+                  AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axlist[12]/axgroup[0]/axgroup[0] title="" description="" value="" actions=[AXShowMenu,AXScrollToVisible]
+                    AXStaticText path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axlist[12]/axgroup[0]/axgroup[0]/axstatictext[0] title="" description="" value="CAI5_IND1_G2" actions=[AXShowMenu,AXScrollToVisible]
+                  AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axlist[12]/axgroup[0]/axgroup[1] title="" description="" value="" actions=[AXShowMenu,AXScrollToVisible]
+                    AXStaticText path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axlist[12]/axgroup[0]/axgroup[1]/axstatictext[0] title="" description="" value="Host: eyouth coordinator" actions=[AXShowMenu,AXScrollToVisible]
+                  AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axlist[12]/axgroup[0]/axbutton[2] title="Start meeting,CAI5_IND1_G2" description="Start meeting,CAI5_IND1_G2" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+                  AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axlist[12]/axgroup[0]/axbutton[3] title="Copy meeting link for CAI5_IND1_G2" description="Copy meeting link for CAI5_IND1_G2" value="" enabled=true actions=[AXPress,AXShowMenu,AXScrollToVisible]
+                  AXGroup path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axlist[12]/axgroup[0]/axgroup[4] title="" description="" value="" actions=[AXShowMenu,AXScrollToVisible]
+                    AXPopUpButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axgroup[7]/axgroup[0]/axscrollarea[0]/axwebarea[0]/axlist[12]/axgroup[0]/axgroup[4]/axpopupbutton[0] title="More options for CAI5_IND1_G2" description="More options for CAI5_IND1_G2" value="" actions=[AXPress,AXShowMenu,AXScrollToVisible]
+      AXButton path=axwindow[0]/axsplitgroup[12]/axgroup[0]/axbutton[8] description="Open AI Companion (⇧⌘O)" enabled=true actions=[AXPress]
+    AXSplitter path=axwindow[0]/axsplitgroup[12]/axsplitter[1] value="869"
+  AXButton/AXCloseButton path=axwindow[0]/axbutton[13] enabled=true actions=[AXPress]
+  AXButton/AXFullScreenButton path=axwindow[0]/axbutton[14] enabled=true actions=[AXPress,AXZoomWindow,AXShowMenu]
+    AXGroup path=axwindow[0]/axbutton[14]/axgroup[0]
+  AXButton/AXMinimizeButton path=axwindow[0]/axbutton[15] enabled=true actions=[AXPress]
+  [No guarded Waiting Room Admit candidate found in this window]
+
+Inspection complete. Save this output if the monitor cannot find the controls.

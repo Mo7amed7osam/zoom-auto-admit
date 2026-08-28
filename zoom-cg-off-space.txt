@@ -1,0 +1,54 @@
+Zoom Auto Admit — Accessibility inspector
+Requested max depth: 14
+Accessibility trusted: true
+Zoom process: pid=94829, bundle=us.zoom.xos
+Zoom active: false
+Zoom hidden: false
+Meeting window found via public window APIs: true
+Meeting window state: otherSpaceOrFullscreen
+Meeting window discovery ID: 29333
+Meeting window discovery evidence: offscreen-normal-window+blank-title
+CGWindowList options: kCGWindowListOptionAll (rawValue=0); kCGWindowListOptionOnScreenOnly is NOT set
+Zoom PID: 94829
+CG windows: 39
+id=29350 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=0.0,y=902.0,width=207.0,height=80.0} alpha=1.000 sharing=0
+id=29349 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=0.0,y=902.0,width=207.0,height=80.0} alpha=1.000 sharing=0
+id=29348 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=0.0,y=654.0,width=500.0,height=328.0} alpha=1.000 sharing=0
+id=29342 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=0.0,y=596.0,width=541.0,height=304.0} alpha=1.000 sharing=0
+id=29340 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=556.0,y=311.0,width=400.0,height=360.0} alpha=1.000 sharing=0
+id=29339 pid=94829 owner="zoom.us" name="" layer=103 onscreen=false bounds={x=1214.0,y=322.0,width=171.0,height=21.0} alpha=0.100 sharing=0
+id=29338 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=276.0,y=83.0,width=960.0,height=660.0} alpha=1.000 sharing=0
+id=29336 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=0.0,y=482.0,width=500.0,height=500.0} alpha=1.000 sharing=0
+id=29334 pid=94829 owner="zoom.us" name="" layer=26 onscreen=false bounds={x=1230.0,y=50.0,width=244.0,height=139.0} alpha=1.000 sharing=0
+id=29333 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=-3280.0,y=-10.0,width=1512.0,height=862.0} alpha=1.000 sharing=0
+id=29332 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=316.0,y=99.0,width=880.0,height=600.0} alpha=1.000 sharing=0
+id=29328 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=-2560.0,y=-217.0,width=2560.0,height=30.0} alpha=1.000 sharing=0
+id=29326 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=1512.0,y=-176.0,width=2560.0,height=30.0} alpha=1.000 sharing=0
+id=29325 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=1512.0,y=-176.0,width=2560.0,height=30.0} alpha=1.000 sharing=0
+id=29323 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=0.0,y=0.0,width=1512.0,height=33.0} alpha=1.000 sharing=0
+id=29322 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=0.0,y=0.0,width=1512.0,height=33.0} alpha=1.000 sharing=0
+id=29321 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=0.0,y=0.0,width=1512.0,height=33.0} alpha=1.000 sharing=0
+id=29377 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=557.0,y=125.0,width=280.0,height=168.0} alpha=1.000 sharing=0
+id=29367 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=712.0,y=52.0,width=744.0,height=672.0} alpha=1.000 sharing=0
+id=29366 pid=94829 owner="zoom.us" name="" layer=101 onscreen=false bounds={x=15.0,y=942.0,width=312.0,height=237.0} alpha=1.000 sharing=0
+id=29364 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=0.0,y=259.0,width=1029.0,height=641.0} alpha=1.000 sharing=0
+id=29363 pid=94829 owner="zoom.us" name="" layer=1000 onscreen=false bounds={x=0.0,y=982.0,width=0.0,height=0.0} alpha=1.000 sharing=0
+id=29356 pid=94829 owner="zoom.us" name="" layer=101 onscreen=false bounds={x=0.0,y=982.0,width=0.0,height=0.0} alpha=1.000 sharing=0
+id=29355 pid=94829 owner="zoom.us" name="" layer=101 onscreen=false bounds={x=0.0,y=982.0,width=0.0,height=0.0} alpha=1.000 sharing=0
+id=29352 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=0.0,y=887.0,width=207.0,height=95.0} alpha=1.000 sharing=0
+id=29351 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=0.0,y=902.0,width=207.0,height=80.0} alpha=1.000 sharing=0
+id=29345 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=0.0,y=382.0,width=197.0,height=600.0} alpha=1.000 sharing=0
+id=29344 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=556.0,y=145.0,width=400.0,height=422.0} alpha=1.000 sharing=0
+id=29343 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=500.0,y=103.0,width=511.0,height=589.0} alpha=1.000 sharing=0
+id=29330 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=-2560.0,y=-217.0,width=2560.0,height=30.0} alpha=1.000 sharing=0
+id=29691 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=-2893.0,y=55.0,width=366.0,height=45.0} alpha=1.000 sharing=0
+id=29324 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=1512.0,y=-176.0,width=2560.0,height=30.0} alpha=1.000 sharing=0
+id=29327 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=1512.0,y=-176.0,width=2560.0,height=30.0} alpha=1.000 sharing=0
+id=29331 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=-2560.0,y=-217.0,width=2560.0,height=30.0} alpha=1.000 sharing=0
+id=29370 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=506.0,y=708.0,width=500.0,height=27.0} alpha=1.000 sharing=0
+id=29320 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=0.0,y=0.0,width=1512.0,height=33.0} alpha=1.000 sharing=0
+id=29329 pid=94829 owner="zoom.us" name="" layer=0 onscreen=false bounds={x=-2560.0,y=-217.0,width=2560.0,height=30.0} alpha=1.000 sharing=0
+id=29347 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=0.0,y=382.0,width=267.0,height=600.0} alpha=1.000 sharing=0
+id=29346 pid=94829 owner="zoom.us" name="" layer=3 onscreen=false bounds={x=0.0,y=382.0,width=237.0,height=600.0} alpha=1.000 sharing=0
+AX window titles: 
+CoreGraphics diagnostic complete. No window was filtered by title.

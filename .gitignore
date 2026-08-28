@@ -1,0 +1,13 @@
+.build/
+dist/
+.DS_Store
+
+# Local IDE settings
+.vscode/
+
+# Local diagnostics and captures
+*.log
+*.jsonl
+
+# Swift and macOS artifacts
+*.dSYM/
