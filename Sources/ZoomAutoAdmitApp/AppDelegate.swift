@@ -68,6 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.schedulerCoordinator.runNow(schedule)
             }
         }
+        if CommandLine.arguments.contains(ParticipantsCheck.launchArgument) {
+            DispatchQueue.global(qos: .userInitiated).async { ParticipantsCheck.run() }
+        }
         if CommandLine.arguments.contains(PreJoinCapture.launchArgument) {
             let opensPreview = !CommandLine.arguments.contains("--no-open")
             DispatchQueue.global(qos: .userInitiated).async {

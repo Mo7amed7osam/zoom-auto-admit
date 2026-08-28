@@ -569,11 +569,16 @@ public enum ZoomAXSupport {
             self.description = ZoomAXSupport.copyStringAttribute(element, kAXDescriptionAttribute)
             self.value = ZoomAXSupport.copyStringAttribute(element, kAXValueAttribute)
             self.identifier = ZoomAXSupport.copyStringAttribute(element, kAXIdentifierAttribute)
-            // Every attribute read is a synchronous IPC round trip to Zoom.
-            // The safety matcher only inspects AXEnabled and AXActions on
-            // AXButton, so the monitor skips them elsewhere. Diagnostic tools
-            // opt back in through collectDiagnosticAttributes.
-            let wantsInteractiveAttributes = role == "AXButton" || ZoomAXSupport.collectDiagnosticAttributes
+            // Every attribute read is a synchronous IPC round trip to Zoom, so
+            // AXEnabled/AXActions/AXHelp are only read for roles that can
+            // actually be pressed. Menu items belong in this set: the
+            // participants command lives in Zoom's View menu, and omitting them
+            // left every menu item looking like it had no AXPress at all.
+            let interactiveRoles: Set<String> = [
+                "AXButton", "AXMenuItem", "AXMenuBarItem", "AXCheckBox", "AXRadioButton", "AXPopUpButton"
+            ]
+            let wantsInteractiveAttributes = interactiveRoles.contains(role)
+                || ZoomAXSupport.collectDiagnosticAttributes
             self.subrole = ZoomAXSupport.collectDiagnosticAttributes
                 ? ZoomAXSupport.copyStringAttribute(element, kAXSubroleAttribute)
                 : nil
@@ -644,25 +649,39 @@ public enum ZoomAXSupport {
     /// The monitor leaves this false to keep each scan cheap.
     public nonisolated(unsafe) static var collectDiagnosticAttributes = false
 
+    /// Builds the tree breadth-first.
+    ///
+    /// Order matters because of the node budget. Zoom's in-meeting toolbar
+    /// republishes each button as its own descendant, over and over, so a
+    /// depth-first walk spends the entire budget inside the first button's
+    /// self-nested chain and never reaches its siblings — which is where the
+    /// real controls live. Breadth-first guarantees every shallow control is
+    /// visited before any deep duplicate.
     public static func buildTree(
         from element: AXUIElement,
         maxDepth: Int = 14,
         maxChildren: Int = 250,
         maxNodes: Int = 6_000
     ) -> Node {
-        var visited = 0
-        func build(_ element: AXUIElement, depth: Int, index: Int, parent: Node?) -> Node {
-            let node = Node(element: element, index: index, parent: parent)
-            visited += 1
-            guard depth < maxDepth, visited < maxNodes else { return node }
-            for (childIndex, child) in children(of: element).prefix(maxChildren).enumerated() {
+        let root = Node(element: element, index: 0, parent: nil)
+        var visited = 1
+        var queue: [(node: Node, depth: Int)] = [(root, 0)]
+        var head = 0
+
+        while head < queue.count, visited < maxNodes {
+            let (node, depth) = queue[head]
+            head += 1
+            guard depth < maxDepth else { continue }
+
+            for (childIndex, child) in children(of: node.element).prefix(maxChildren).enumerated() {
                 if visited >= maxNodes { break }
-                let childNode = build(child, depth: depth + 1, index: childIndex, parent: node)
+                let childNode = Node(element: child, index: childIndex, parent: node)
+                visited += 1
                 node.children.append(childNode)
+                queue.append((childNode, depth + 1))
             }
-            return node
         }
-        return build(element, depth: 0, index: 0, parent: nil)
+        return root
     }
 
     public static func windowTitle(_ window: AXUIElement) -> String {

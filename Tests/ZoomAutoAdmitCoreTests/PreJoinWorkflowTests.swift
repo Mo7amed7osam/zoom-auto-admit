@@ -222,6 +222,57 @@ final class PreJoinWorkflowTests: XCTestCase {
         XCTAssertEqual(automation.startPressCount, 0)
     }
 
+    // MARK: Participants panel
+
+    /// Auto Admit is blind while the panel is closed, so the workflow opens it.
+    func testClosedParticipantsPanelIsOpenedAfterTheMeetingStarts() {
+        let automation = makeAutomation()
+        automation.microphoneState = .off
+        automation.cameraState = .off
+        automation.participantsPanel = .closed
+        let target = profile()
+
+        let (result, states, _) = run(automation, schedule: schedule(profile: target), profile: target)
+
+        XCTAssertEqual(result, .completed(autoAdmitStarted: true))
+        XCTAssertEqual(automation.participantsOpenAttempts, 1)
+        XCTAssertEqual(automation.participantsPanel, .open)
+        XCTAssertTrue(states.contains(.participantsPanelReady))
+    }
+
+    /// The same control closes the panel, so an already-open panel is left alone.
+    func testOpenParticipantsPanelIsNotToggledShut() {
+        let automation = makeAutomation()
+        automation.microphoneState = .off
+        automation.cameraState = .off
+        automation.participantsPanel = .open
+        let target = profile()
+
+        _ = run(automation, schedule: schedule(profile: target), profile: target)
+
+        XCTAssertEqual(automation.participantsOpenAttempts, 0)
+        XCTAssertEqual(automation.participantsPanel, .open)
+    }
+
+    /// The meeting is already running by this point; failing the whole workflow
+    /// would help nobody, so this is reported and Auto Admit still starts.
+    func testFailureToOpenTheParticipantsPanelIsNotFatal() {
+        let automation = makeAutomation()
+        automation.microphoneState = .off
+        automation.cameraState = .off
+        automation.participantsPanel = .closed
+        automation.participantsToggleWorks = false
+        let target = profile()
+
+        let (result, _, details) = run(automation, schedule: schedule(profile: target), profile: target)
+
+        XCTAssertEqual(result, .completed(autoAdmitStarted: true))
+        XCTAssertTrue(
+            details.contains { $0.contains("Could not open the Participants panel") },
+            "the problem must be reported, got \(details)"
+        )
+    }
+
     func testDefaultScheduleTurnsBothDevicesOffAndEnablesAutoAdmit() {
         let schedule = ZoomSchedule(
             name: "Defaults",
@@ -322,6 +373,23 @@ private final class FakePreJoinAutomation: ZoomAutomating {
     }
 
     func isReadyToStartMeeting(for process: ZoomProcess) -> Bool { true }
+
+    var participantsPanel: ZoomAXSupport.ParticipantsPanelState = .open
+    var participantsToggleWorks = true
+    private(set) var participantsOpenAttempts = 0
+
+    func participantsPanelState(for process: ZoomProcess) -> ZoomAXSupport.ParticipantsPanelState {
+        participantsPanel
+    }
+
+    func openParticipantsPanel(for process: ZoomProcess) -> PreJoinActionOutcome {
+        participantsOpenAttempts += 1
+        guard participantsToggleWorks else {
+            return .rejected("the Participants control could not be identified")
+        }
+        participantsPanel = .open
+        return .pressed
+    }
 
     func meetingPresence(for process: ZoomProcess) -> MeetingPresence {
         ZoomAXSupport.classifyMeetingPresence(

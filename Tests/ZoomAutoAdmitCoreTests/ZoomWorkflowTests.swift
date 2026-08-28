@@ -497,6 +497,23 @@ private final class FakeZoomAutomation: ZoomAutomating {
 
     func isReadyToStartMeeting(for process: ZoomProcess) -> Bool { true }
 
+    var participantsPanel: ZoomAXSupport.ParticipantsPanelState = .open
+    var participantsToggleWorks = true
+    private(set) var participantsOpenAttempts = 0
+
+    func participantsPanelState(for process: ZoomProcess) -> ZoomAXSupport.ParticipantsPanelState {
+        participantsPanel
+    }
+
+    func openParticipantsPanel(for process: ZoomProcess) -> PreJoinActionOutcome {
+        participantsOpenAttempts += 1
+        guard participantsToggleWorks else {
+            return .rejected("the Participants control could not be identified")
+        }
+        participantsPanel = .open
+        return .pressed
+    }
+
     func meetingPresence(for process: ZoomProcess) -> MeetingPresence {
         // A pid that no longer exists can answer nothing at all.
         guard process.pid == self.process?.pid else {

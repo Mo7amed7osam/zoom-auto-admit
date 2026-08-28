@@ -3,6 +3,7 @@ import ApplicationServices
 import Foundation
 import OSLog
 import ZoomAXSupport
+import ZoomAutoAdmitCore
 
 /// Diagnostic capture of Zoom's pre-join preview.
 ///
@@ -70,6 +71,8 @@ enum PreJoinCapture {
 
         while Date() < deadline && !captured {
             pollCount += 1
+            lines.append("")
+            lines.append("---- poll \(pollCount) ----")
             let application = ZoomAXSupport.freshZoomApplicationElement(pid: process.pid, messagingTimeout: 5)
             var candidates: [(label: String, element: AXUIElement)] = []
 
@@ -102,11 +105,20 @@ enum PreJoinCapture {
 
                 lines.append("")
                 lines.append("===== CANDIDATE \(candidate.label) title=\(String(reflecting: title)) poll=\(pollCount) =====")
-                lines.append("Matcher result: \(preview.map(describe) ?? "NOT RECOGNISED as a pre-join preview")")
+                lines.append("Pre-join matcher: \(preview.map(describe) ?? "not a pre-join preview")")
+                lines.append("Participants panel: \(ZoomAXSupport.participantsPanelState(inWindow: snapshot).rawValue)")
+                if let toggle = ZoomAXSupport.participantsToggle(inWindow: snapshot) {
+                    lines.append("Participants toggle: matched=\(String(reflecting: toggle.matchedText)) via \(toggle.evidence) indexPath=\(toggle.indexPath)")
+                } else {
+                    lines.append("Participants toggle: NOT RECOGNISED")
+                }
                 lines.append("")
                 lines.append("----- full hierarchy -----")
                 lines.append(contentsOf: describeTree(snapshot, depth: 0, path: ""))
                 captured = true
+                // Keep going: the meeting window is usually not the first
+                // non-home window Zoom reports.
+                continue
             }
 
             if !captured {
@@ -191,5 +203,56 @@ enum PreJoinCapture {
             withIntermediateDirectories: true
         )
         try? Data(lines.joined(separator: "\n").utf8).write(to: fileURL, options: .atomic)
+    }
+}
+
+/// One-shot check of the Participants panel against a live meeting, used to
+/// verify the toolbar matcher without starting another meeting.
+enum ParticipantsCheck {
+    static let launchArgument = "--open-participants"
+
+    static func run() {
+        let log = SchedulerLog.shared
+        guard let process = ZoomAXSupport.zoomApplication() else {
+            log.write("Participants check: Zoom is not running")
+            return
+        }
+
+        // Log what the reader actually sees, so a miss is diagnosable instead of
+        // guessable.
+        let application = ZoomAXSupport.freshZoomApplicationElement(pid: process.pid, messagingTimeout: 5)
+        let windows = ZoomAXSupport.windowsResult(of: application)
+        log.write("Participants check: AXWindows=\(windows.windows.count) error=\(windows.error.diagnosticDescription)")
+        for (index, window) in windows.windows.enumerated() {
+            let title = ZoomAXSupport.windowTitle(window)
+            let shallow = ZoomAXSupport.snapshot(
+                from: ZoomAXSupport.buildTree(from: window, maxDepth: 3, maxChildren: 120)
+            )
+            let buttons = shallow.children.filter { $0.role == "AXButton" }
+            log.write("  window[\(index)] title=\(String(reflecting: title)) children=\(shallow.children.count) buttons=\(buttons.count)")
+            for button in buttons where (button.identifier ?? "").contains("partic")
+                || (button.description ?? "").lowercased().contains("partic") {
+                log.write("    candidate id=\(String(reflecting: button.identifier ?? "")) desc=\(String(reflecting: button.description ?? "")) actions=\(button.actions) enabled=\(button.enabled)")
+            }
+        }
+
+        let automation = LiveZoomAutomation()
+        let zoom = ZoomProcess(pid: process.pid, bundleIdentifier: process.bundleIdentifier)
+        let before = automation.participantsPanelState(for: zoom)
+        log.write("Participants check: panel is \(before.rawValue)")
+
+        guard before == .closed else {
+            log.write("Participants check: nothing to do")
+            return
+        }
+
+        switch automation.openParticipantsPanel(for: zoom) {
+        case .rejected(let reason):
+            log.write("Participants check: could not open — \(reason)")
+        case .pressed:
+            log.write("Participants check: pressed the Participants control")
+            Thread.sleep(forTimeInterval: 2.0)
+            log.write("Participants check: panel is now \(automation.participantsPanelState(for: zoom).rawValue)")
+        }
     }
 }

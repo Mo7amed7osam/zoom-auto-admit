@@ -175,6 +175,72 @@ final class ValidationTests: XCTestCase {
         XCTAssertEqual(unset.summaryText, "Unset")
     }
 
+    /// Regression test for a live failure: a full invite link was reduced to
+    /// digits, so the host name's own digits were spliced onto the front and the
+    /// wrong number was used.
+    func testMeetingLinksAreParsedStructurallyNotByStrippingDigits() {
+        XCTAssertEqual(
+            MeetingReference.normalizedMeetingID("https://zoom.us/j/94698416251"),
+            "94698416251"
+        )
+        XCTAssertEqual(
+            MeetingReference.normalizedMeetingID("https://us05web.zoom.us/j/94698416251"),
+            "94698416251",
+            "the 05 in us05web must not end up in the meeting number"
+        )
+        XCTAssertEqual(
+            MeetingReference.normalizedMeetingID("https://us02web.zoom.us/j/94698416251?pwd=aBc123"),
+            "94698416251"
+        )
+        XCTAssertEqual(
+            MeetingReference.normalizedMeetingID("zoommtg://zoom.us/join?confno=94698416251"),
+            "94698416251"
+        )
+        XCTAssertEqual(MeetingReference.normalizedMeetingID("https://zoom.us/s/94698416251"), "94698416251")
+    }
+
+    func testPlainMeetingNumbersStillWork() {
+        XCTAssertEqual(MeetingReference.normalizedMeetingID("946 9841 6251"), "94698416251")
+        XCTAssertEqual(MeetingReference.normalizedMeetingID("946-9841-6251"), "94698416251")
+        XCTAssertEqual(MeetingReference.normalizedMeetingID("94698416251"), "94698416251")
+    }
+
+    func testUnparseableLinkYieldsNothingRatherThanGarbage() {
+        // Better to fail validation than to open some other meeting.
+        XCTAssertEqual(MeetingReference.normalizedMeetingID("https://zoom.us/my/someroom"), "")
+        XCTAssertEqual(MeetingReference.normalizedMeetingID("https://example.com/nothing"), "")
+    }
+
+    func testPasscodeIsTakenFromAnInviteLink() {
+        XCTAssertEqual(
+            MeetingReference.passcode(from: "https://us02web.zoom.us/j/94698416251?pwd=aBc123xyz"),
+            "aBc123xyz"
+        )
+        XCTAssertNil(MeetingReference.passcode(from: "https://zoom.us/j/94698416251"))
+        XCTAssertNil(MeetingReference.passcode(from: "94698416251"))
+    }
+
+    func testPasscodeSurvivesPersistence() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zoom-auto-admit-pwd-\(UUID().uuidString)")
+            .appendingPathComponent("schedules.json")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+
+        let account = profile()
+        let meeting = MeetingReference(
+            name: "Recurring",
+            kind: .meetingID("https://zoom.us/j/94698416251"),
+            passcode: "aBc123"
+        )
+        let configuration = SchedulerConfiguration(
+            accountProfiles: [account],
+            schedules: [schedule(profileID: account.id, meeting: meeting)]
+        )
+        let store = ScheduleStore(fileURL: url)
+        XCTAssertTrue(store.save(configuration))
+        XCTAssertEqual(ScheduleStore(fileURL: url).load().schedules.first?.meeting.passcode, "aBc123")
+    }
+
     func testMeetingIDGrouping() {
         XCTAssertEqual(MeetingReference.groupedMeetingID("12345678901"), "123 4567 8901")
         XCTAssertEqual(MeetingReference.groupedMeetingID("1234567890"), "123 4567 890")

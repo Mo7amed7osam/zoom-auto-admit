@@ -48,6 +48,10 @@ enum WorkflowPresentation {
             return "Waiting for meeting…"
         case .meetingStarted:
             return "✓ Meeting started"
+        case .openingParticipantsPanel:
+            return "Opening participants…"
+        case .participantsPanelReady:
+            return "Participants panel ready"
         case .monitoringWaitingRoom, .autoAdmitStarted:
             return "Auto Admit active"
         }

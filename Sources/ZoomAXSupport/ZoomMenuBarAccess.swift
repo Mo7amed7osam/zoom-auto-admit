@@ -39,8 +39,11 @@ public extension ZoomAXSupport {
         var barChildren: [SnapshotNode] = []
         for barItem in children(of: menuBar) {
             let title = copyStringAttribute(barItem, kAXTitleAttribute)
-            if zoomApplicationMenuTitles.contains(normalized(title ?? "")) {
-                // The Zoom menu holds Switch account; walk it properly.
+            let normalizedTitle = normalized(title ?? "")
+            if zoomApplicationMenuTitles.contains(normalizedTitle)
+                || zoomMeetingMenuTitles.contains(normalizedTitle) {
+                // The Zoom menu holds Switch account; View holds Show
+                // participants. Both need a real walk.
                 barChildren.append(snapshot(from: buildTree(from: barItem, maxDepth: 4, maxChildren: 200)))
             } else {
                 barChildren.append(SnapshotNode(role: "AXMenuBarItem", title: title))

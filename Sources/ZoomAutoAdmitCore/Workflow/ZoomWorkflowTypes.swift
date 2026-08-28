@@ -64,6 +64,8 @@ public enum ZoomWorkflowState: String, Equatable {
     case pressingStart
     case verifyingMeeting
     case meetingStarted
+    case openingParticipantsPanel
+    case participantsPanelReady
     case monitoringWaitingRoom
     case autoAdmitStarted
     case completed
@@ -170,6 +172,12 @@ public protocol ZoomAutomating {
     /// Whether Zoom is in a state where it will act on a start request. A client
     /// that has just relaunched after an account switch is not.
     func isReadyToStartMeeting(for process: ZoomProcess) -> Bool
+    /// Whether the in-meeting Participants panel is open. The Waiting Room rows
+    /// only exist in the Accessibility tree while it is.
+    func participantsPanelState(for process: ZoomProcess) -> ZoomAXSupport.ParticipantsPanelState
+    /// Opens the Participants panel. Only ever called when it is closed, because
+    /// the same control closes it again.
+    func openParticipantsPanel(for process: ZoomProcess) -> PreJoinActionOutcome
     func startMeeting(_ meeting: MeetingReference) -> MeetingStartOutcome
     /// Zoom's pre-join preview, or nil when no preview is open. A nil result is
     /// normal: Zoom skips the preview when the user has disabled it.

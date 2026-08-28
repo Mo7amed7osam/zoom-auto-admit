@@ -25,6 +25,12 @@ public extension ZoomAXSupport {
     static let addAccountIdentifier = "addAccount:"
     static let signOutAllAccountsIdentifier = "signOutAllAccounts:"
     static let zoomApplicationMenuTitles = ["zoom workplace", "zoom.us", "zoom"]
+    /// Menus that only exist during a meeting, or that hold in-meeting commands.
+    static let zoomMeetingMenuTitles = ["view", "meeting"]
+    /// Zoom adds this menu bar item for the duration of a meeting, which makes
+    /// it an application-level "a meeting is running" signal that keeps working
+    /// when every Zoom window is on another Space.
+    static let meetingMenuBarTitle = "meeting"
     /// Observed on every account row of the signed-in account.
     static let activeAccountMarkCharacters: Set<String> = ["✓", "√", "•"]
 

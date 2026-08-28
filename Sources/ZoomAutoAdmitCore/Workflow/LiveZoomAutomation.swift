@@ -111,6 +111,42 @@ public final class LiveZoomAutomation: ZoomAutomating {
         return item.node.enabled
     }
 
+    public func participantsPanelState(for process: ZoomProcess) -> ZoomAXSupport.ParticipantsPanelState {
+        ZoomAXSupport.participantsReading(pid: process.pid).state
+    }
+
+    public func openParticipantsPanel(for process: ZoomProcess) -> PreJoinActionOutcome {
+        let reading = ZoomAXSupport.participantsReading(pid: process.pid)
+        guard reading.state != .open else { return .pressed }
+
+        if let command = reading.menuCommand {
+            switch ZoomAXSupport.pressParticipantsMenuCommand(command, in: reading) {
+            case .pressed:
+                return .pressed
+            case .verificationFailed(let reason):
+                return .rejected(reason)
+            case .elementUnavailable:
+                return .rejected("the participants menu command could not be resolved")
+            case .axError(let error):
+                return .rejected("AXPress returned \(error.diagnosticDescription)")
+            }
+        }
+
+        guard let toggle = reading.toggle else {
+            return .rejected("the Participants control could not be identified")
+        }
+        switch ZoomAXSupport.pressParticipantsToggle(toggle, in: reading) {
+        case .pressed:
+            return .pressed
+        case .verificationFailed(let reason):
+            return .rejected(reason)
+        case .elementUnavailable:
+            return .rejected("the Participants control could not be resolved")
+        case .axError(let error):
+            return .rejected("AXPress returned \(error.diagnosticDescription)")
+        }
+    }
+
     public func meetingWindowSignature(for process: ZoomProcess) -> Set<CGWindowID> {
         ZoomAXSupport.meetingWindowSignature(pid: process.pid)
     }

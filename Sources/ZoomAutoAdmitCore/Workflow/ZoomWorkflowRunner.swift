@@ -137,11 +137,64 @@ public final class ZoomWorkflowRunner {
             return .completed(autoAdmitStarted: false)
         }
 
+        // Waiting Room rows only exist in the Accessibility tree while the
+        // Participants panel is open, so Auto Admit is blind without it.
+        ensureParticipantsPanelOpen(process: process)
+
         transition(to: .monitoringWaitingRoom, detail: "Handing over to Auto Admit")
         transition(to: .autoAdmitStarted, detail: "Auto Admit active")
         transition(to: .completed, detail: "Workflow completed")
         state = .completed
         return .completed(autoAdmitStarted: true)
+    }
+
+    /// Opens the Participants panel if it is closed.
+    ///
+    /// Deliberately non-fatal. By this point the meeting is running, and failing
+    /// the workflow would neither close the meeting nor help; the panel can be
+    /// opened by hand and monitoring will pick it up on the next poll. The
+    /// outcome is logged either way.
+    private func ensureParticipantsPanelOpen(process: ZoomProcess) {
+        switch automation.participantsPanelState(for: process) {
+        case .open:
+            observer(.participantsPanelReady, "Participants panel already open")
+            return
+        case .unknown:
+            observer(
+                .openingParticipantsPanel,
+                "Participants panel state unreadable; Auto Admit will keep retrying"
+            )
+            return
+        case .closed:
+            break
+        }
+
+        transition(to: .openingParticipantsPanel, detail: "Opening the Participants panel")
+        switch automation.openParticipantsPanel(for: process) {
+        case .rejected(let reason):
+            automation.capturePreJoinDiagnostics(reason: "Participants panel: \(reason)")
+            observer(
+                .openingParticipantsPanel,
+                "Could not open the Participants panel: \(reason). Open it in Zoom so Auto Admit can see the Waiting Room."
+            )
+            return
+        case .pressed:
+            break
+        }
+
+        // Re-read rather than assume the press worked.
+        let opened = waitUntil(timeout: timeouts.accountSwitch) { [automation] in
+            automation.participantsPanelState(for: process) == .open
+        }
+        if opened {
+            transition(to: .participantsPanelReady, detail: "Participants panel open")
+        } else {
+            automation.capturePreJoinDiagnostics(reason: "Participants panel did not open")
+            observer(
+                .openingParticipantsPanel,
+                "The Participants panel did not open; open it in Zoom so Auto Admit can see the Waiting Room."
+            )
+        }
     }
 
     // MARK: Pre-join preview
