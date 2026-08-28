@@ -68,6 +68,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.schedulerCoordinator.runNow(schedule)
             }
         }
+        if CommandLine.arguments.contains(ParticipantsCapture.launchArgument) {
+            let startsMeeting = !CommandLine.arguments.contains("--no-start")
+            DispatchQueue.global(qos: .userInitiated).async {
+                ParticipantsCapture.run(startMeeting: startsMeeting)
+            }
+        }
         if CommandLine.arguments.contains(ParticipantsCheck.launchArgument) {
             DispatchQueue.global(qos: .userInitiated).async { ParticipantsCheck.run() }
         }
