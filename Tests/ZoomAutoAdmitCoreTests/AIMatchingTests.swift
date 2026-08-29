@@ -452,3 +452,56 @@ final class AIReconciliationTests: XCTestCase {
         XCTAssertNotEqual(summary.session.records[0].status, .present)
     }
 }
+
+/// The prompt has to tell the model how to calibrate, not just what to avoid.
+///
+/// The rule that only warned about ambiguity produced 0.85 for a Zoom name whose
+/// given name belonged to exactly one student on the list, which fell under the
+/// 0.90 auto-accept threshold and cost a manual review for a pairing nothing
+/// competed with.
+final class PromptCalibrationTests: XCTestCase {
+    private func prompt() -> String {
+        OpenRouterClient.prompt(for: AIMatchRequest(
+            students: [.init(id: "s0", officialName: "Zahraa Hagag Abdelsamea Abdelrahman")],
+            observedNames: [.init(id: "z0", displayName: "Zahraa Swelim")]
+        ))
+    }
+
+    func testUniquenessIsStatedAsAConfidentCase() {
+        let text = prompt().lowercased()
+        XCTAssertTrue(text.contains("exactly one student"))
+        XCTAssertTrue(text.contains("no other student competes"))
+    }
+
+    func testASurnameThatDiffersIsNotTreatedAsDoubt() {
+        let text = prompt().lowercased()
+        XCTAssertTrue(text.contains("surname"))
+        XCTAssertTrue(text.contains("married name"))
+    }
+
+    func testAmbiguityIsJudgedAgainstThisListOnly() {
+        XCTAssertTrue(prompt().lowercased().contains("common in the wider world"))
+    }
+
+    func testConfidenceBandsAreGiven() {
+        let text = prompt()
+        XCTAssertTrue(text.contains("0.90 to 1.00"))
+        XCTAssertTrue(text.contains("0.70 to 0.89"))
+        XCTAssertTrue(text.contains("below 0.70"))
+    }
+
+    /// The original ambiguity rule must survive: uniqueness guidance is an
+    /// addition, not a licence to guess between competing students.
+    func testTheAmbiguityRuleIsStillPresent() {
+        let text = prompt().lowercased()
+        XCTAssertTrue(text.contains("multiple plausible"))
+        XCTAssertTrue(text.contains("never chosen randomly"))
+    }
+
+    func testTheCalibrationRulesLeakNothing() {
+        let text = prompt().lowercased()
+        for forbidden in ["password", "api key", "authorization", "sk-or", "schedule", "zoommtg", "Bearer"] {
+            XCTAssertFalse(text.contains(forbidden.lowercased()), "prompt leaked \(forbidden)")
+        }
+    }
+}

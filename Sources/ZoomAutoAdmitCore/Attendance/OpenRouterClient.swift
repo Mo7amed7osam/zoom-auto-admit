@@ -67,7 +67,21 @@ public final class OpenRouterClient {
         - Each student may appear at most once. Each observed name may appear at most once.
         - Consider competing candidates before assigning. A shared first name with multiple plausible \
         students is ambiguous and must be marked needs_review or left unmatched, never chosen randomly.
-        - Set needs_review to true for a plausible but uncertain pairing.
+        - The opposite case is a confident match, not a doubtful one. When a name element points at \
+        exactly one student on this list and no other student competes for it, assign it. A surname \
+        that differs, is missing, is extra, or is reordered does not weaken a pairing that is already \
+        unique: people sign in with a married name, a family name, a shortened name, or only part of \
+        their full name.
+        - Judge ambiguity only against the students on this list. A given name that is common in the \
+        wider world but belongs to exactly one student here is not ambiguous, and must not be \
+        downgraded for being common.
+        - Calibrate confidence to the competition, not to how unusual the spelling or transliteration is:
+          - 0.90 to 1.00: the pairing is unique on this list and nothing else plausibly competes.
+          - 0.70 to 0.89: plausible, but another student also competes for the same observed name, or \
+        the only thing shared is one short or very common element.
+          - below 0.70: guesswork. Leave it unmatched instead of proposing it.
+        - Set needs_review to true only when a competing candidate genuinely exists. Do not set it \
+        merely because part of the name is absent, transliterated, or spelled differently.
         - If there is no plausible pairing, leave the student and observed name unmatched.
 
         Students:

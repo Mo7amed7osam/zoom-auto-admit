@@ -13,7 +13,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var schedulerWindowController: SchedulerWindowController?
     private var settingsWindowController: SettingsWindowController?
     private var attendanceWindowController: AttendanceWindowController?
-    private let attendanceCoordinator = AttendanceCoordinator()
+    private lazy var attendanceCoordinator = AttendanceCoordinator(
+        configurationProvider: { [weak self] in
+            self?.schedulerCoordinator.currentConfiguration ?? SchedulerConfiguration()
+        },
+        configurationWriter: { [weak self] configuration in
+            self?.schedulerCoordinator.update(configuration: configuration)
+        }
+    )
     private var accessibilityCheckGeneration: UInt64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {

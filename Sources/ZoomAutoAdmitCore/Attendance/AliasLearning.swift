@@ -49,6 +49,46 @@ public enum AliasLearning {
         return .success(updated)
     }
 
+    /// Every confirmed pairing in a session, recorded as an alias.
+    ///
+    /// A match that had to be worked out once should never have to be worked
+    /// out again: without this, the same nickname is sent to the AI every week
+    /// and costs a review every week. Only settled records qualify — a pairing
+    /// still sitting in Needs Review is a question, not knowledge, and teaching
+    /// the roster from it would make a guess permanent.
+    public static func learnConfirmedMatches(
+        in session: AttendanceSession,
+        group: StudentGroup
+    ) -> ConfirmedLearningOutcome {
+        var updated = group
+        var learned: [LearnedAlias] = []
+        var skipped: [String] = []
+
+        for record in session.records where record.status == .present {
+            guard let zoomName = record.matchedZoomName else { continue }
+
+            switch learn(alias: zoomName, forStudent: record.studentID, in: updated) {
+            case .success(let group):
+                // `learn` is a no-op for an alias already known or identical to
+                // the official name, so only a real addition is reported.
+                let before = updated.students.first { $0.id == record.studentID }?.aliases.count ?? 0
+                let after = group.students.first { $0.id == record.studentID }?.aliases.count ?? 0
+                updated = group
+                if after > before {
+                    learned.append(LearnedAlias(
+                        studentID: record.studentID,
+                        studentName: record.studentName,
+                        alias: zoomName
+                    ))
+                }
+            case .failure(let error):
+                skipped.append("\(zoomName) → \(record.studentName): \(error.message)")
+            }
+        }
+
+        return ConfirmedLearningOutcome(group: updated, learned: learned, skipped: skipped)
+    }
+
     public static func forget(
         alias rawAlias: String,
         forStudent studentID: UUID,
@@ -60,6 +100,35 @@ public enum AliasLearning {
         updated.students[index].aliases.removeAll { NameNormalizer.normalize($0) == normalized }
         return updated
     }
+}
+
+/// One newly recorded alias, for the report shown after learning.
+public struct LearnedAlias: Equatable {
+    public let studentID: UUID
+    public let studentName: String
+    public let alias: String
+
+    public init(studentID: UUID, studentName: String, alias: String) {
+        self.studentID = studentID
+        self.studentName = studentName
+        self.alias = alias
+    }
+}
+
+/// What a batch of learning changed, and what it refused.
+public struct ConfirmedLearningOutcome: Equatable {
+    public let group: StudentGroup
+    public let learned: [LearnedAlias]
+    /// Aliases refused by the safety rules, with the reason.
+    public let skipped: [String]
+
+    public init(group: StudentGroup, learned: [LearnedAlias], skipped: [String]) {
+        self.group = group
+        self.learned = learned
+        self.skipped = skipped
+    }
+
+    public var didChangeGroup: Bool { !learned.isEmpty }
 }
 
 public enum AliasLearningError: Error, Equatable {

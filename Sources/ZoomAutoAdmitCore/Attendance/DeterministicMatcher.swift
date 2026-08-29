@@ -50,6 +50,85 @@ public enum DeterministicMatcher {
     /// Device-style names never auto-accept, however well they score.
     public static let deviceNameCeiling = 0.5
 
+    /// One pairing's score, with why.
+    public struct ScoredPairing: Equatable {
+        public var score: Double
+        public var source: MatchSource
+        public var reason: String
+
+        public init(score: Double, source: MatchSource, reason: String) {
+            self.score = score
+            self.source = source
+            self.reason = reason
+        }
+    }
+
+    /// Scores one Zoom name against one student.
+    ///
+    /// Public so the review UI can offer the same suggestion the matcher would
+    /// have made. A reviewer picking from a long unsorted list is being asked to
+    /// redo work the matcher already did; ranking by this keeps the two in step,
+    /// and there is only ever one scoring rule to reason about.
+    public static func score(rawObservedName: String, student: Student) -> ScoredPairing? {
+        score(
+            rawObservedName: rawObservedName,
+            normalizedObservedName: NameNormalizer.normalize(rawObservedName),
+            officialNormalized: student.normalizedOfficialName,
+            officialTokens: NameNormalizer.tokens(student.officialName),
+            aliasSet: Set(student.aliases.map(NameNormalizer.normalize))
+        )
+    }
+
+    private static func score(
+        rawObservedName: String,
+        normalizedObservedName observed: String,
+        officialNormalized: String,
+        officialTokens: [String],
+        aliasSet: Set<String>
+    ) -> ScoredPairing? {
+        guard !observed.isEmpty else { return nil }
+
+        var candidate: ScoredPairing
+
+        if observed == officialNormalized {
+            candidate = ScoredPairing(score: 1.0, source: .exact, reason: "Name matches the roster exactly")
+        } else if aliasSet.contains(observed) {
+            candidate = ScoredPairing(score: 1.0, source: .alias, reason: "Known alias for this student")
+        } else {
+            let observedTokens = NameNormalizer.tokens(rawObservedName)
+            let token = NameSimilarity.tokenSimilarity(
+                observed: observedTokens,
+                official: officialTokens
+            )
+            let whole = max(
+                NameSimilarity.jaroWinkler(observed, officialNormalized),
+                NameSimilarity.levenshteinSimilarity(observed, officialNormalized)
+            )
+            if token >= whole {
+                candidate = ScoredPairing(
+                    score: token,
+                    source: .token,
+                    reason: tokenReason(observedTokens, officialTokens)
+                )
+            } else {
+                candidate = ScoredPairing(score: whole, source: .fuzzy, reason: "Names are similar")
+            }
+        }
+
+        // A device name may well be a student, but it is not evidence —
+        // unless a human already told us whose device it is. An exact
+        // roster name or a learned alias outranks the heuristic.
+        let isHumanConfirmed = candidate.source == .exact || candidate.source == .alias
+        if !isHumanConfirmed,
+           NameNormalizer.looksLikeDeviceName(rawObservedName)
+            || NameNormalizer.isLowSignal(rawObservedName) {
+            candidate.score = min(candidate.score, deviceNameCeiling)
+            candidate.reason += "; Zoom name looks like a device"
+        }
+
+        return candidate
+    }
+
     public static func match(
         students: [Student],
         observations: [ParticipantObservation],
@@ -63,44 +142,13 @@ public enum DeterministicMatcher {
             let aliasSet = Set(student.aliases.map(NameNormalizer.normalize))
 
             for observation in observations {
-                let observed = observation.normalizedName
-                guard !observed.isEmpty else { continue }
-
-                var best: (score: Double, source: MatchSource, reason: String)?
-
-                if observed == officialNormalized {
-                    best = (1.0, .exact, "Name matches the roster exactly")
-                } else if aliasSet.contains(observed) {
-                    best = (1.0, .alias, "Known alias for this student")
-                } else {
-                    let observedTokens = NameNormalizer.tokens(observation.rawName)
-                    let token = NameSimilarity.tokenSimilarity(
-                        observed: observedTokens,
-                        official: officialTokens
-                    )
-                    let whole = max(
-                        NameSimilarity.jaroWinkler(observed, officialNormalized),
-                        NameSimilarity.levenshteinSimilarity(observed, officialNormalized)
-                    )
-                    if token >= whole {
-                        best = (token, .token, tokenReason(observedTokens, officialTokens))
-                    } else {
-                        best = (whole, .fuzzy, "Names are similar")
-                    }
-                }
-
-                guard var candidate = best else { continue }
-
-                // A device name may well be a student, but it is not evidence —
-                // unless a human already told us whose device it is. An exact
-                // roster name or a learned alias outranks the heuristic.
-                let isHumanConfirmed = candidate.source == .exact || candidate.source == .alias
-                if !isHumanConfirmed,
-                   NameNormalizer.looksLikeDeviceName(observation.rawName)
-                    || NameNormalizer.isLowSignal(observation.rawName) {
-                    candidate.score = min(candidate.score, deviceNameCeiling)
-                    candidate.reason += "; Zoom name looks like a device"
-                }
+                guard let candidate = score(
+                    rawObservedName: observation.rawName,
+                    normalizedObservedName: observation.normalizedName,
+                    officialNormalized: officialNormalized,
+                    officialTokens: officialTokens,
+                    aliasSet: aliasSet
+                ) else { continue }
 
                 guard candidate.score >= reviewFloor else { continue }
                 candidates.append(MatchCandidate(

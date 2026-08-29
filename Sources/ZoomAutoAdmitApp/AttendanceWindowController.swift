@@ -31,6 +31,11 @@ final class AttendanceWindowController: NSWindowController {
     private let summaryLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private let table = NSTableView()
+    /// The same register, in the order the official list is written in.
+    private let rosterTable = NSTableView()
+    private var rosterRecords: [AttendanceRecord] = []
+    private let copyRosterButton = NSButton(title: "Copy Full List", target: nil, action: nil)
+    private let tabView = NSTabView()
     private let unmatchedLabel = NSTextField(wrappingLabelWithString: "")
     private let finalizeButton = NSButton(title: "Finalize Attendance", target: nil, action: nil)
     private let aiButton = NSButton(title: "Match with AI", target: nil, action: nil)
@@ -111,16 +116,36 @@ final class AttendanceWindowController: NSWindowController {
         table.delegate = self
         table.dataSource = self
 
-        let scroll = NSScrollView()
-        scroll.documentView = table
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .noBorder
-        scroll.drawsBackground = false
-        scroll.wantsLayer = true
-        scroll.layer?.cornerRadius = DesignKit.Metrics.cardCornerRadius
-        scroll.layer?.borderWidth = 1
-        scroll.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.6).cgColor
-        scroll.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        let scroll = Self.listScrollView(for: table)
+
+        // Reading the register back onto another system is a different job from
+        // reviewing it: it wants the official order, every student, and nothing
+        // to search for. Its own tab keeps both jobs honest.
+        let rosterColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("rosterStudent"))
+        rosterColumn.title = "Roster"
+        rosterColumn.width = 520
+        rosterTable.addTableColumn(rosterColumn)
+        rosterTable.headerView = nil
+        rosterTable.rowHeight = 30
+        rosterTable.intercellSpacing = NSSize(width: 0, height: 2)
+        rosterTable.selectionHighlightStyle = .none
+        rosterTable.style = .inset
+        rosterTable.usesAlternatingRowBackgroundColors = true
+        rosterTable.delegate = self
+        rosterTable.dataSource = self
+        let rosterScroll = Self.listScrollView(for: rosterTable)
+
+        copyRosterButton.target = self
+        copyRosterButton.action = #selector(copyRosterOrder)
+        copyRosterButton.bezelStyle = .rounded
+        copyRosterButton.toolTip = "Copy every student, in roster order, as plain text."
+
+        let rosterHint = NSTextField(wrappingLabelWithString:
+            "Roster order — the order this group was entered in. "
+            + "Every student is listed, and the search box above does not filter this tab."
+        )
+        rosterHint.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        rosterHint.textColor = .secondaryLabelColor
 
         unmatchedLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         unmatchedLabel.textColor = .secondaryLabelColor
@@ -160,7 +185,22 @@ final class AttendanceWindowController: NSWindowController {
         header.setCustomSpacing(2, after: summaryLabel)
         header.setCustomSpacing(14, after: statusLabel)
 
-        let root = NSStackView(views: [header, scroll, unmatchedLabel, actions])
+        let reviewTab = NSTabViewItem(identifier: "review")
+        reviewTab.label = "Review"
+        reviewTab.view = Self.tabContent([scroll, unmatchedLabel], stretching: scroll)
+
+        let rosterTab = NSTabViewItem(identifier: "rosterOrder")
+        rosterTab.label = "Roster Order"
+        rosterTab.view = Self.tabContent(
+            [rosterScroll, rosterHint, DesignKit.horizontal([copyRosterButton, NSView()], spacing: 10)],
+            stretching: rosterScroll
+        )
+
+        tabView.addTabViewItem(reviewTab)
+        tabView.addTabViewItem(rosterTab)
+        tabView.translatesAutoresizingMaskIntoConstraints = false
+
+        let root = NSStackView(views: [header, tabView, actions])
         root.orientation = .vertical
         root.alignment = .leading
         root.spacing = 16
@@ -179,12 +219,48 @@ final class AttendanceWindowController: NSWindowController {
             root.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             root.topAnchor.constraint(equalTo: container.topAnchor),
             root.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 360),
+            tabView.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
+            tabView.heightAnchor.constraint(greaterThanOrEqualToConstant: 400),
             sessionPopUp.widthAnchor.constraint(equalToConstant: 420),
-            unmatchedLabel.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32),
             actions.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -32)
         ])
+        return container
+    }
+
+    private static func listScrollView(for table: NSTableView) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = DesignKit.Metrics.cardCornerRadius
+        scroll.layer?.borderWidth = 1
+        scroll.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.6).cgColor
+        scroll.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        return scroll
+    }
+
+    private static func tabContent(_ views: [NSView], stretching: NSView) -> NSView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView()
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            stretching.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24)
+        ])
+        for view in views where view !== stretching {
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -24).isActive = true
+        }
         return container
     }
 
@@ -221,8 +297,12 @@ final class AttendanceWindowController: NSWindowController {
     private func rebuildItems() {
         guard let session = selectedSession else {
             items = []
+            rosterRecords = []
             return
         }
+
+        // Unfiltered on purpose: this tab exists to be read straight through.
+        rosterRecords = session.recordsInRosterOrder
 
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let visible = session.records.filter { record in
@@ -274,8 +354,10 @@ final class AttendanceWindowController: NSWindowController {
             finalizeButton.isEnabled = false
             aiButton.isEnabled = false
             exportButton.isEnabled = false
+            copyRosterButton.isEnabled = false
             rebuildItems()
             table.reloadData()
+            rosterTable.reloadData()
             return
         }
 
@@ -329,14 +411,17 @@ final class AttendanceWindowController: NSWindowController {
             ? "Ask OpenRouter about the names local matching could not settle."
             : "Add an OpenRouter API key in Settings to enable AI matching."
         exportButton.isEnabled = true
+        copyRosterButton.isEnabled = true
 
         rebuildItems()
         table.reloadData()
+        rosterTable.reloadData()
     }
 
     @objc private func searchChanged() {
         rebuildItems()
         table.reloadData()
+        rosterTable.reloadData()
     }
 
     private func title(for session: AttendanceSession) -> String {
@@ -443,12 +528,19 @@ final class AttendanceWindowController: NSWindowController {
                 self.lastExchange = AIExchangeRecord(exchange: exchange, summary: summary)
                 self.aiDetailsButton.isEnabled = true
                 self.update(summary.session)
+                // Whatever the AI settled is now roster knowledge, so the same
+                // Zoom names resolve locally next time without another request.
+                let learned = self.learnConfirmedAliases(from: summary.session)
 
                 var detail = """
                 \(summary.appliedCount) matched
                 \(summary.reviewCount) need review
                 \(summary.unmatchedObservedNameCount) Zoom name(s) still unmatched
                 """
+                if !learned.isEmpty {
+                    let names = learned.map { "\($0.alias) → \($0.studentName)" }.joined(separator: "\n")
+                    detail += "\n\nRemembered for future meetings:\n\(names)"
+                }
                 if !summary.rejected.isEmpty {
                     detail += "\n\n\(summary.rejected.count) proposal(s) were rejected as unusable."
                 }
@@ -611,15 +703,75 @@ final class AttendanceWindowController: NSWindowController {
 // MARK: - Rows
 
 extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+    /// One roster line: position, official name, status, and the Zoom name that
+    /// earned it. The position is what makes this transcribable at a glance.
+    private func rosterRowView(_ record: AttendanceRecord, position: Int) -> NSView {
+        let number = NSTextField(labelWithString: "\(position).")
+        number.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        number.textColor = .tertiaryLabelColor
+        number.alignment = .right
+        number.widthAnchor.constraint(equalToConstant: 30).isActive = true
+
+        let name = NSTextField(labelWithString: record.studentName)
+        name.font = .systemFont(ofSize: NSFont.systemFontSize)
+        name.lineBreakMode = .byTruncatingTail
+
+        let status = NSTextField(labelWithString: AttendanceExport.displayStatus(record.status))
+        status.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        status.textColor = Self.tint(for: record.status)
+        status.alignment = .right
+
+        var views: [NSView] = [number, name, NSView()]
+        if let zoomName = record.matchedZoomName, !zoomName.isEmpty {
+            let zoom = NSTextField(labelWithString: zoomName)
+            zoom.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            zoom.textColor = .secondaryLabelColor
+            zoom.lineBreakMode = .byTruncatingTail
+            views.append(zoom)
+        }
+        views.append(status)
+
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.spacing = 8
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 6, bottom: 0, right: 10)
+        return row
+    }
+
+    private static func tint(for status: AttendanceStatus) -> NSColor {
+        switch status {
+        case .present: return .systemGreen
+        case .needsReview: return .systemOrange
+        case .absent: return .systemRed
+        case .notSeenYet: return .secondaryLabelColor
+        }
+    }
+
+    /// Puts the whole register on the pasteboard in roster order.
+    @objc private func copyRosterOrder() {
+        guard let session = selectedSession else { return }
+        let text = AttendanceExport.rosterOrderReport(for: session)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copyRosterButton.title = "Copied"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.copyRosterButton.title = "Copy Full List"
+        }
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        tableView === rosterTable ? rosterRecords.count : items.count
+    }
 
     func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+        guard tableView !== rosterTable else { return false }
         guard items.indices.contains(row) else { return false }
         if case .header = items[row] { return true }
         return false
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard tableView !== rosterTable else { return 30 }
         guard items.indices.contains(row) else { return 44 }
         switch items[row] {
         case .header: return 30
@@ -629,6 +781,7 @@ extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        guard tableView !== rosterTable else { return false }
         // Section headings are not selectable.
         guard items.indices.contains(row) else { return false }
         if case .header = items[row] { return false }
@@ -636,6 +789,10 @@ extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if tableView === rosterTable {
+            guard rosterRecords.indices.contains(row) else { return nil }
+            return rosterRowView(rosterRecords[row], position: row + 1)
+        }
         guard items.indices.contains(row) else { return nil }
         switch items[row] {
         case .header(let title, let count, let tint):
@@ -702,12 +859,21 @@ extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate
         alert.messageText = "Who is “\(observation.rawName)”?"
         alert.informativeText = "Pick the official student this Zoom name belongs to."
 
-        let popUp = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 25))
-        let candidates = session.rosterSnapshot.sorted {
-            $0.officialName.localizedCompare($1.officialName) == .orderedAscending
-        }
-        for student in candidates { popUp.addItem(withTitle: student.officialName) }
+        // Same reasoning as Match…: lead with the student this Zoom name most
+        // likely belongs to rather than with whoever sorts first alphabetically.
+        let suspected = session.records
+            .first { $0.matchedObservationID == observation.id }?
+            .studentID
+        let candidates = Self.rankedStudents(
+            session.rosterSnapshot,
+            for: observation.rawName,
+            suspected: suspected
+        )
         guard !candidates.isEmpty else { return }
+
+        let popUp = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 25))
+        for candidate in candidates { popUp.addItem(withTitle: candidate.title) }
+        popUp.selectItem(at: 0)
 
         let remember = NSButton(checkboxWithTitle: "Remember this name for future meetings", target: nil, action: nil)
         remember.state = .on
@@ -723,7 +889,7 @@ extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate
         alert.addButton(withTitle: "Assign")
 
         guard alert.runModal() == .alertSecondButtonReturn else { return }
-        let student = candidates[popUp.indexOfSelectedItem]
+        let student = candidates[popUp.indexOfSelectedItem].student
 
         update(AttendanceReconciler.applyManualMatch(
             session: session,
@@ -898,11 +1064,20 @@ extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate
         alert.messageText = "Match \(record.studentName)"
         alert.informativeText = "Choose the Zoom name this student used."
 
+        // Offer the name the register already suspects, then everything else
+        // best-first. Presenting an unsorted list would ask the reviewer to redo
+        // by eye the ranking the matcher has already computed.
+        let student = session.rosterSnapshot.first { $0.id == record.studentID }
+        let ranked = Self.rankedObservations(
+            session.observations,
+            for: student,
+            suspected: record.matchedObservationID
+        )
+        guard !ranked.isEmpty else { return }
+
         let popUp = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 25))
-        for observation in session.observations {
-            popUp.addItem(withTitle: observation.rawName)
-        }
-        guard !session.observations.isEmpty else { return }
+        for candidate in ranked { popUp.addItem(withTitle: candidate.title) }
+        popUp.selectItem(at: 0)
 
         let remember = NSButton(checkboxWithTitle: "Remember this name for future meetings", target: nil, action: nil)
         remember.state = .on
@@ -918,7 +1093,7 @@ extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate
         alert.addButton(withTitle: "Match")
 
         guard alert.runModal() == .alertSecondButtonReturn else { return }
-        let observation = session.observations[popUp.indexOfSelectedItem]
+        let observation = ranked[popUp.indexOfSelectedItem].observation
 
         update(AttendanceReconciler.applyManualMatch(
             session: session,
@@ -930,6 +1105,111 @@ extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate
         if remember.state == .on {
             learnAlias(observation.rawName, studentID: record.studentID, groupID: session.groupID)
         }
+    }
+
+    struct RankedObservation {
+        let observation: ParticipantObservation
+        let title: String
+    }
+
+    struct RankedStudent {
+        let student: Student
+        let title: String
+    }
+
+    /// Zoom names ordered by how well they fit one student.
+    ///
+    /// The pairing the register already suspects leads, then everything else by
+    /// the matcher's own score, so the reviewer confirms a judgement instead of
+    /// hunting through an alphabetical list.
+    static func rankedObservations(
+        _ observations: [ParticipantObservation],
+        for student: Student?,
+        suspected: UUID?
+    ) -> [RankedObservation] {
+        let scored = observations.map { observation -> (ParticipantObservation, Double) in
+            guard let student else { return (observation, 0) }
+            let score = DeterministicMatcher.score(
+                rawObservedName: observation.rawName,
+                student: student
+            )?.score ?? 0
+            return (observation, score)
+        }
+
+        let ordered = scored.sorted { left, right in
+            if left.0.id == suspected { return true }
+            if right.0.id == suspected { return false }
+            if left.1 != right.1 { return left.1 > right.1 }
+            return left.0.rawName.localizedCompare(right.0.rawName) == .orderedAscending
+        }
+
+        return ordered.map { observation, score in
+            RankedObservation(
+                observation: observation,
+                title: title(for: observation.rawName, score: score, isSuspected: observation.id == suspected)
+            )
+        }
+    }
+
+    /// The mirror image, for "who is this Zoom name?".
+    static func rankedStudents(
+        _ students: [Student],
+        for rawObservedName: String,
+        suspected: UUID?
+    ) -> [RankedStudent] {
+        let scored = students.map { student -> (Student, Double) in
+            let score = DeterministicMatcher.score(
+                rawObservedName: rawObservedName,
+                student: student
+            )?.score ?? 0
+            return (student, score)
+        }
+
+        let ordered = scored.sorted { left, right in
+            if left.0.id == suspected { return true }
+            if right.0.id == suspected { return false }
+            if left.1 != right.1 { return left.1 > right.1 }
+            return left.0.officialName.localizedCompare(right.0.officialName) == .orderedAscending
+        }
+
+        return ordered.map { student, score in
+            RankedStudent(
+                student: student,
+                title: title(for: student.officialName, score: score, isSuspected: student.id == suspected)
+            )
+        }
+    }
+
+    /// A score is only worth showing when it means something; below the
+    /// matcher's own review floor it is noise dressed up as a number.
+    private static func title(for name: String, score: Double, isSuspected: Bool) -> String {
+        if isSuspected { return "\(name)  ·  suggested" }
+        guard score >= DeterministicMatcher.reviewFloor else { return name }
+        return "\(name)  ·  \(Int((score * 100).rounded()))% match"
+    }
+
+    /// Turns the matches this session settled into roster knowledge.
+    ///
+    /// Without this a name worked out by AI in September is worked out by AI
+    /// again in October, at the same cost and the same risk. Only records that
+    /// are actually Present are learned: a Needs Review row is a question, and
+    /// teaching the roster from a question would make a guess permanent.
+    @discardableResult
+    private func learnConfirmedAliases(from session: AttendanceSession) -> [LearnedAlias] {
+        var configuration = configurationProvider()
+        guard let index = configuration.studentGroups.firstIndex(where: { $0.id == session.groupID }) else {
+            return []
+        }
+
+        let outcome = AliasLearning.learnConfirmedMatches(
+            in: session,
+            group: configuration.studentGroups[index]
+        )
+        guard outcome.didChangeGroup else { return [] }
+
+        configuration.studentGroups[index] = outcome.group
+        configurationWriter(configuration)
+        return outcome.learned
     }
 
     /// Learned aliases are what make the next meeting resolve without AI.

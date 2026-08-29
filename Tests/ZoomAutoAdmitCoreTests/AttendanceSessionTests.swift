@@ -359,3 +359,138 @@ final class AttendanceStoreTests: XCTestCase {
         XCTAssertTrue(store.loadAll().isEmpty)
     }
 }
+
+/// Reading a register back onto another platform means walking the official
+/// list top to bottom, so the order it was entered in has to survive.
+final class RosterOrderTests: XCTestCase {
+    /// Deliberately not alphabetical: this is the order the group was entered in.
+    private let officialOrder = [
+        "AYMAN ABDELFATTAH MAHMOUD ZYAN",
+        "Abeer Mohammed Abu Elhassan Elsayed",
+        "seham Mohamed helmy ibrahem rezk",
+        "Aml Anter Mohamed Khalil"
+    ]
+
+    private func session(finalized: Bool = false) -> AttendanceSession {
+        let roster = officialOrder.map { Student(officialName: $0) }
+        // Records arrive sorted by name, which is what the review list wants.
+        let records = roster
+            .sorted { $0.officialName.localizedCompare($1.officialName) == .orderedAscending }
+            .enumerated()
+            .map { index, student in
+                AttendanceRecord(
+                    studentID: student.id,
+                    studentName: student.officialName,
+                    status: index.isMultiple(of: 2) ? .present : (finalized ? .absent : .notSeenYet),
+                    matchedZoomName: index.isMultiple(of: 2) ? "\(student.officialName) (zoom)" : nil
+                )
+            }
+
+        return AttendanceSession(
+            groupID: UUID(),
+            groupName: "CAI5_IND1_G1",
+            meetingName: "Class",
+            startedAt: Date(),
+            finalizedAt: finalized ? Date() : nil,
+            rosterSnapshot: roster,
+            records: records
+        )
+    }
+
+    func testRecordsComeBackInTheOrderTheGroupWasEnteredIn() {
+        let session = session()
+        XCTAssertNotEqual(session.records.map(\.studentName), officialOrder, "records are name-sorted")
+        XCTAssertEqual(session.recordsInRosterOrder.map(\.studentName), officialOrder)
+    }
+
+    func testEveryStudentAppearsExactlyOnce() {
+        let ordered = session().recordsInRosterOrder
+        XCTAssertEqual(ordered.count, officialOrder.count)
+        XCTAssertEqual(Set(ordered.map(\.studentID)).count, officialOrder.count)
+    }
+
+    /// A record for somebody off the snapshot is unexpected, but it is still
+    /// evidence and must not vanish from the list.
+    func testARecordOutsideTheRosterIsKeptAtTheEnd() {
+        var session = session()
+        session.records.append(AttendanceRecord(
+            studentID: UUID(),
+            studentName: "Someone Not On The Roster",
+            status: .needsReview
+        ))
+
+        let ordered = session.recordsInRosterOrder
+        XCTAssertEqual(ordered.count, officialOrder.count + 1)
+        XCTAssertEqual(ordered.last?.studentName, "Someone Not On The Roster")
+        XCTAssertEqual(ordered.dropLast().map(\.studentName), officialOrder)
+    }
+
+    func testTheReportIsNumberedInRosterOrder() {
+        let session = session(finalized: true)
+        let report = AttendanceExport.rosterOrderReport(for: session)
+        let lines = report.split(separator: "\n").map(String.init)
+
+        XCTAssertEqual(lines.count, officialOrder.count)
+        for (index, record) in session.recordsInRosterOrder.enumerated() {
+            XCTAssertTrue(lines[index].hasPrefix("\(index + 1). "), lines[index])
+            XCTAssertTrue(lines[index].contains(officialOrder[index]), lines[index])
+            XCTAssertTrue(
+                lines[index].contains(AttendanceExport.displayStatus(record.status)),
+                lines[index]
+            )
+        }
+        // Both outcomes must actually be exercised, or the check proves nothing.
+        XCTAssertTrue(report.contains("Present"))
+        XCTAssertTrue(report.contains("Absent"))
+    }
+
+    /// Past nine students the numbers gain a digit, and the dots have to stay
+    /// in one column or the list stops reading as a list.
+    func testNumbersAreRightAlignedPastNine() {
+        let roster = (1...12).map { Student(officialName: "Student \($0)") }
+        let session = AttendanceSession(
+            groupID: UUID(),
+            groupName: "Wide",
+            meetingName: "Class",
+            startedAt: Date(),
+            rosterSnapshot: roster,
+            records: roster.map {
+                AttendanceRecord(studentID: $0.id, studentName: $0.officialName, status: .present)
+            }
+        )
+
+        let lines = AttendanceExport.rosterOrderReport(for: session)
+            .split(separator: "\n").map(String.init)
+        XCTAssertTrue(lines[0].hasPrefix(" 1. "), lines[0])
+        XCTAssertTrue(lines[9].hasPrefix("10. "), lines[9])
+        let dotColumns = Set(lines.map { $0.distance(from: $0.startIndex, to: $0.firstIndex(of: ".")!) })
+        XCTAssertEqual(dotColumns.count, 1, "the dots must line up in one column")
+    }
+
+    func testTheReportCanLeaveZoomNamesOut() {
+        let report = AttendanceExport.rosterOrderReport(for: session(), includeZoomNames: false)
+        XCTAssertFalse(report.contains("(zoom)"))
+        XCTAssertTrue(report.contains("AYMAN ABDELFATTAH MAHMOUD ZYAN — Present"))
+    }
+
+    func testAnEmptyRegisterSaysSoRatherThanReturningNothing() {
+        let empty = AttendanceSession(
+            groupID: UUID(),
+            groupName: "Empty",
+            meetingName: "Class",
+            startedAt: Date(),
+            rosterSnapshot: []
+        )
+        XCTAssertTrue(AttendanceExport.rosterOrderReport(for: empty).contains("No students"))
+    }
+
+    /// The CSV is the other way this register leaves the app, and it has to
+    /// arrive in the same order as the list on screen.
+    func testCSVFollowsTheSameOrder() {
+        let csv = AttendanceExport.csv(for: session(finalized: true))
+        let names = csv.split(separator: "\n").dropFirst().map { line -> String in
+            String(line.split(separator: ",", omittingEmptySubsequences: false)[0])
+        }
+        XCTAssertEqual(names, officialOrder)
+    }
+}

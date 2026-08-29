@@ -22,7 +22,7 @@ public enum AttendanceExport {
 
         var lines = [header.map(escape).joined(separator: ",")]
 
-        for record in session.records {
+        for record in session.recordsInRosterOrder {
             let observation = record.matchedObservationID.flatMap { session.observation(withID: $0) }
             let fields = [
                 record.studentName,
@@ -37,6 +37,34 @@ public enum AttendanceExport {
             lines.append(fields.map(escape).joined(separator: ","))
         }
 
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// The whole register as a numbered list, in roster order.
+    ///
+    /// Built for transcription: one student per line, in the order the official
+    /// list is already in, so reading it out onto another system is a straight
+    /// walk down the page with nothing to search for.
+    public static func rosterOrderReport(
+        for session: AttendanceSession,
+        includeZoomNames: Bool = true
+    ) -> String {
+        let ordered = session.recordsInRosterOrder
+        guard !ordered.isEmpty else { return "No students on this register." }
+
+        let width = String(ordered.count).count
+        var lines: [String] = []
+        for (index, record) in ordered.enumerated() {
+            // Padded on the left, so the dots line up in a column and the list
+            // reads as a numbered list rather than "1 ." and "10.".
+            let raw = String(index + 1)
+            let number = String(repeating: " ", count: max(0, width - raw.count)) + raw
+            var line = "\(number). \(record.studentName) — \(displayStatus(record.status))"
+            if includeZoomNames, let zoomName = record.matchedZoomName, !zoomName.isEmpty {
+                line += " (\(zoomName))"
+            }
+            lines.append(line)
+        }
         return lines.joined(separator: "\n") + "\n"
     }
 

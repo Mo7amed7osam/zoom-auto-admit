@@ -306,3 +306,195 @@ final class AttendanceWiringTests: XCTestCase {
         wait(for: [callback], timeout: 0.1)
     }
 }
+
+/// A reviewer should confirm the matcher's judgement, not redo it by eye.
+final class ReviewSuggestionTests: XCTestCase {
+    private let roster = [
+        Student(officialName: "Weaam Mohamed Elsayed Ismaiel"),
+        Student(officialName: "Zahraa Hagag Abdelsamea Abdelrahman"),
+        Student(officialName: "Ahmed Mumdoh Abd El Rahim Mohammed")
+    ]
+
+    private func observation(_ name: String) -> ParticipantObservation {
+        ParticipantObservation(
+            rawName: name,
+            normalizedName: NameNormalizer.normalize(name),
+            observedAt: [Date()]
+        )
+    }
+
+    func testTheSuspectedZoomNameIsOfferedFirst() {
+        let unrelated = observation("Youssef Ayoub")
+        let suspected = observation("Dr.Weaam Mohamed Ismael")
+        let ranked = AttendanceWindowController.rankedObservations(
+            [unrelated, suspected],
+            for: roster[0],
+            suspected: suspected.id
+        )
+
+        XCTAssertEqual(ranked.first?.observation.id, suspected.id)
+        XCTAssertTrue(ranked[0].title.contains("suggested"))
+    }
+
+    /// With nothing suspected yet, the best-scoring name still leads.
+    func testTheBestScoringNameLeadsWithoutASuspicion() {
+        let ranked = AttendanceWindowController.rankedObservations(
+            [observation("Youssef Ayoub"), observation("Dr.Weaam Mohamed Ismael")],
+            for: roster[0],
+            suspected: nil
+        )
+
+        XCTAssertEqual(ranked.first?.observation.rawName, "Dr.Weaam Mohamed Ismael")
+        XCTAssertTrue(ranked[0].title.contains("% match"))
+    }
+
+    func testTheReverseDirectionRanksStudents() {
+        let ranked = AttendanceWindowController.rankedStudents(
+            roster,
+            for: "Zahraa Swelim",
+            suspected: nil
+        )
+
+        XCTAssertEqual(ranked.first?.student.officialName, "Zahraa Hagag Abdelsamea Abdelrahman")
+    }
+
+    func testASuspectedStudentOutranksABetterScore() {
+        let ranked = AttendanceWindowController.rankedStudents(
+            roster,
+            for: "Zahraa Swelim",
+            suspected: roster[2].id
+        )
+
+        XCTAssertEqual(ranked.first?.student.id, roster[2].id)
+        XCTAssertTrue(ranked[0].title.contains("suggested"))
+    }
+
+    /// Every candidate must still be reachable: ranking reorders the list, it
+    /// never shortens it.
+    func testRankingKeepsEveryCandidate() {
+        let names = [observation("a"), observation("b"), observation("c")]
+        XCTAssertEqual(
+            AttendanceWindowController.rankedObservations(names, for: roster[0], suspected: nil).count,
+            3
+        )
+        XCTAssertEqual(
+            AttendanceWindowController.rankedStudents(roster, for: "anything", suspected: nil).count,
+            roster.count
+        )
+    }
+
+    /// A weak score is not dressed up as a number the reviewer might trust.
+    func testWeakCandidatesShowNoPercentage() {
+        let ranked = AttendanceWindowController.rankedObservations(
+            [observation("Youssef Ayoub")],
+            for: roster[0],
+            suspected: nil
+        )
+        XCTAssertFalse(ranked[0].title.contains("%"))
+        XCTAssertEqual(ranked[0].title, "Youssef Ayoub")
+    }
+}
+
+/// Finalizing a register is the moment its knowledge is worth keeping.
+final class FinalizeLearnsAliasesTests: XCTestCase {
+    func testFinalizingWritesConfirmedNamesBackOntoTheRoster() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zoom-auto-admit-learn-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let attendanceStore = AttendanceStore(directory: directory.appendingPathComponent("Attendance"))
+
+        let student = Student(officialName: "Weaam Mohamed Elsayed Ismaiel")
+        let group = StudentGroup(name: "Class A", students: [student])
+        let schedule = ZoomSchedule(
+            name: "Class meeting",
+            recurrence: .daily,
+            startTime: TimeOfDay(hour: 10, minute: 0),
+            accountProfileID: UUID(),
+            meeting: MeetingReference(name: "Class meeting", kind: .meetingID("12345678901")),
+            attendanceGroupID: group.id
+        )
+
+        let observation = ParticipantObservation(
+            rawName: "Dr.Weaam Mohamed Ismael",
+            normalizedName: NameNormalizer.normalize("Dr.Weaam Mohamed Ismael"),
+            observedAt: [Date()]
+        )
+        // A human already settled this pairing during the meeting.
+        let open = AttendanceSession(
+            groupID: group.id,
+            groupName: group.name,
+            scheduleID: schedule.id,
+            meetingName: schedule.meeting.name,
+            startedAt: Date(),
+            rosterSnapshot: [student],
+            observations: [observation],
+            records: [AttendanceRecord(
+                studentID: student.id,
+                studentName: student.officialName,
+                status: .present,
+                matchedObservationID: observation.id,
+                matchedZoomName: observation.rawName,
+                matchSource: .manual,
+                isManual: true
+            )],
+            snapshots: [AttendanceSnapshot(capturedAt: Date(), reason: .meetingStarted)]
+        )
+        XCTAssertTrue(attendanceStore.save(open))
+
+        var configuration = SchedulerConfiguration(
+            accountProfiles: [],
+            schedules: [schedule],
+            studentGroups: [group]
+        )
+        var writes = 0
+        let coordinator = AttendanceCoordinator(
+            store: attendanceStore,
+            schedulerLog: SchedulerLog(fileURL: directory.appendingPathComponent("scheduler.log")),
+            configurationProvider: { configuration },
+            configurationWriter: { updated in
+                configuration = updated
+                writes += 1
+            }
+        )
+
+        XCTAssertTrue(coordinator.resumeOpenSession(configuration: configuration))
+        let finalized = try XCTUnwrap(coordinator.finalize())
+
+        XCTAssertNotNil(finalized.finalizedAt)
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(configuration.studentGroups[0].students[0].aliases, ["Dr.Weaam Mohamed Ismael"])
+    }
+
+    /// Nothing to learn means nothing is written: an untouched roster must not
+    /// be rewritten on every finalize.
+    func testFinalizingWithNothingNewWritesNoConfiguration() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zoom-auto-admit-learn-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let attendanceStore = AttendanceStore(directory: directory.appendingPathComponent("Attendance"))
+
+        let group = StudentGroup(name: "Class A", students: [Student(officialName: "Student One")])
+        let schedule = ZoomSchedule(
+            name: "Class meeting",
+            recurrence: .daily,
+            startTime: TimeOfDay(hour: 10, minute: 0),
+            accountProfileID: UUID(),
+            meeting: MeetingReference(name: "Class meeting", kind: .meetingID("12345678901")),
+            attendanceGroupID: group.id
+        )
+        let configuration = SchedulerConfiguration(schedules: [schedule], studentGroups: [group])
+
+        var writes = 0
+        let coordinator = AttendanceCoordinator(
+            store: attendanceStore,
+            schedulerLog: SchedulerLog(fileURL: directory.appendingPathComponent("scheduler.log")),
+            configurationProvider: { configuration },
+            configurationWriter: { _ in writes += 1 }
+        )
+
+        coordinator.start(group: group, schedule: schedule)
+        _ = coordinator.finalize()
+
+        XCTAssertEqual(writes, 0)
+    }
+}

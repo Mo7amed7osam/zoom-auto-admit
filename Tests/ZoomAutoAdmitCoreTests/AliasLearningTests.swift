@@ -122,3 +122,154 @@ final class AliasLearningTests: XCTestCase {
         XCTAssertTrue(group.students[0].aliases.isEmpty)
     }
 }
+
+/// A match worked out once must not have to be worked out again.
+final class ConfirmedAliasLearningTests: XCTestCase {
+    private func student(_ name: String, aliases: [String] = []) -> Student {
+        Student(officialName: name, aliases: aliases)
+    }
+
+    private func session(
+        group: StudentGroup,
+        records: [AttendanceRecord]
+    ) -> AttendanceSession {
+        AttendanceSession(
+            groupID: group.id,
+            groupName: group.name,
+            meetingName: "Class",
+            startedAt: Date(),
+            rosterSnapshot: group.students,
+            records: records
+        )
+    }
+
+    func testPresentMatchesBecomeAliases() {
+        let zahraa = student("Zahraa Hagag Abdelsamea Abdelrahman")
+        let group = StudentGroup(name: "G1", students: [zahraa])
+        let outcome = AliasLearning.learnConfirmedMatches(
+            in: session(group: group, records: [
+                AttendanceRecord(
+                    studentID: zahraa.id,
+                    studentName: zahraa.officialName,
+                    status: .present,
+                    matchedZoomName: "Zahraa Swelim",
+                    matchSource: .ai,
+                    confidence: 0.93
+                )
+            ]),
+            group: group
+        )
+
+        XCTAssertEqual(outcome.learned.map(\.alias), ["Zahraa Swelim"])
+        XCTAssertEqual(outcome.group.students[0].aliases, ["Zahraa Swelim"])
+        XCTAssertTrue(outcome.didChangeGroup)
+    }
+
+    /// The learned alias is what makes the next meeting resolve with no AI call.
+    func testLearnedAliasResolvesTheSameNameNextTime() {
+        let zahraa = student("Zahraa Hagag Abdelsamea Abdelrahman")
+        let group = StudentGroup(name: "G1", students: [zahraa])
+        let learned = AliasLearning.learnConfirmedMatches(
+            in: session(group: group, records: [
+                AttendanceRecord(
+                    studentID: zahraa.id,
+                    studentName: zahraa.officialName,
+                    status: .present,
+                    matchedZoomName: "Zahraa Swelim",
+                    matchSource: .ai
+                )
+            ]),
+            group: group
+        ).group
+
+        let observation = ParticipantObservation(
+            rawName: "Zahraa Swelim",
+            normalizedName: NameNormalizer.normalize("Zahraa Swelim"),
+            observedAt: [Date()]
+        )
+        let outcome = DeterministicMatcher.match(
+            students: learned.students,
+            observations: [observation],
+            autoAcceptConfidence: 0.9
+        )
+
+        XCTAssertEqual(outcome.accepted.count, 1)
+        XCTAssertEqual(outcome.accepted.first?.source, .alias)
+        XCTAssertTrue(outcome.review.isEmpty)
+    }
+
+    /// A question must never be recorded as knowledge.
+    func testNeedsReviewAndAbsentRecordsTeachNothing() {
+        let one = student("Aya Hussein Mohamed Mkhemar")
+        let two = student("Doaa Hafez Abbas Shalaby")
+        let group = StudentGroup(name: "G2", students: [one, two])
+        let outcome = AliasLearning.learnConfirmedMatches(
+            in: session(group: group, records: [
+                AttendanceRecord(
+                    studentID: one.id,
+                    studentName: one.officialName,
+                    status: .needsReview,
+                    matchedZoomName: "Aya",
+                    matchSource: .ai,
+                    confidence: 0.61
+                ),
+                AttendanceRecord(
+                    studentID: two.id,
+                    studentName: two.officialName,
+                    status: .absent,
+                    matchedZoomName: "Doaa H",
+                    matchSource: .none
+                )
+            ]),
+            group: group
+        )
+
+        XCTAssertTrue(outcome.learned.isEmpty)
+        XCTAssertFalse(outcome.didChangeGroup)
+        XCTAssertEqual(outcome.group, group)
+    }
+
+    func testAnAliasIsNeverLearnedTwice() {
+        let student = student("Weaam Mohamed Elsayed Ismaiel", aliases: ["Dr.Weaam Mohamed Ismael"])
+        let group = StudentGroup(name: "G1", students: [student])
+        let outcome = AliasLearning.learnConfirmedMatches(
+            in: session(group: group, records: [
+                AttendanceRecord(
+                    studentID: student.id,
+                    studentName: student.officialName,
+                    status: .present,
+                    matchedZoomName: "Dr.Weaam Mohamed Ismael",
+                    matchSource: .alias
+                )
+            ]),
+            group: group
+        )
+
+        XCTAssertTrue(outcome.learned.isEmpty)
+        XCTAssertEqual(outcome.group.students[0].aliases, ["Dr.Weaam Mohamed Ismael"])
+    }
+
+    /// The safety rules still win: a name belonging to somebody else is refused
+    /// rather than quietly moving attendance between students.
+    func testAConflictingAliasIsSkippedAndReported() {
+        let one = student("Mohamed Hatem Sadek Alsaeid")
+        let two = student("mohamed hamam mohamed tamam")
+        let group = StudentGroup(name: "G1", students: [one, two])
+        let outcome = AliasLearning.learnConfirmedMatches(
+            in: session(group: group, records: [
+                AttendanceRecord(
+                    studentID: one.id,
+                    studentName: one.officialName,
+                    status: .present,
+                    matchedZoomName: two.officialName,
+                    matchSource: .ai
+                )
+            ]),
+            group: group
+        )
+
+        XCTAssertTrue(outcome.learned.isEmpty)
+        XCTAssertEqual(outcome.skipped.count, 1)
+        XCTAssertTrue(outcome.group.students.allSatisfy { $0.aliases.isEmpty })
+    }
+}

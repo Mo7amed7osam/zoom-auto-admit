@@ -34,9 +34,22 @@ final class AttendanceCoordinator {
     private(set) var liveSummary: AttendanceLiveSummary?
     var onChange: (() -> Void)?
 
-    init(store: AttendanceStore = AttendanceStore(), schedulerLog: SchedulerLog = .shared) {
+    /// Supplied by the app delegate so a finalized register can teach the
+    /// roster. Optional: the coordinator records attendance perfectly well
+    /// without them, it simply learns nothing.
+    private let configurationProvider: (() -> SchedulerConfiguration)?
+    private let configurationWriter: ((SchedulerConfiguration) -> Void)?
+
+    init(
+        store: AttendanceStore = AttendanceStore(),
+        schedulerLog: SchedulerLog = .shared,
+        configurationProvider: (() -> SchedulerConfiguration)? = nil,
+        configurationWriter: ((SchedulerConfiguration) -> Void)? = nil
+    ) {
         self.store = store
         self.schedulerLog = schedulerLog
+        self.configurationProvider = configurationProvider
+        self.configurationWriter = configurationWriter
     }
 
     var isRecording: Bool { queue.sync { timer != nil } }
@@ -190,8 +203,38 @@ final class AttendanceCoordinator {
                 + "review=\(finalized.needsReviewCount) snapshots=\(finalized.snapshots.count) "
                 + "missed=\(finalized.missedSnapshotCount)"
             )
+            learnConfirmedAliasesLocked(from: finalized)
             return finalized
         }
+    }
+
+    /// Writes the names this class settled back onto the roster.
+    ///
+    /// A Zoom name that had to be worked out once should never have to be worked
+    /// out again — that is the difference between a register that gets easier
+    /// every week and one that asks the same question forever. Only Present
+    /// records are learned; a Needs Review row is an open question, and teaching
+    /// the roster from it would turn a guess into a permanent fact.
+    private func learnConfirmedAliasesLocked(from session: AttendanceSession) {
+        guard let configurationProvider, let configurationWriter else { return }
+        var configuration = configurationProvider()
+        guard let index = configuration.studentGroups.firstIndex(where: { $0.id == session.groupID }) else {
+            return
+        }
+
+        let outcome = AliasLearning.learnConfirmedMatches(
+            in: session,
+            group: configuration.studentGroups[index]
+        )
+        for skipped in outcome.skipped {
+            schedulerLog.write("[attendance] alias-not-learned \(skipped)")
+        }
+        guard outcome.didChangeGroup else { return }
+
+        configuration.studentGroups[index] = outcome.group
+        configurationWriter(configuration)
+        let learned = outcome.learned.map { "\($0.alias)->\($0.studentName)" }.joined(separator: " | ")
+        schedulerLog.write("[attendance] aliases-learned count=\(outcome.learned.count) [\(learned)]")
     }
 
     /// Called when Auto Admit lets somebody in. Bursts coalesce into one snapshot.

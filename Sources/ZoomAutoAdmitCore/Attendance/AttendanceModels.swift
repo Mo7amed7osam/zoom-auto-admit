@@ -409,6 +409,26 @@ public struct AttendanceSession: Codable, Equatable, Identifiable {
     public var absentCount: Int { records.filter { $0.status == .absent }.count }
     public var needsReviewCount: Int { records.filter { $0.status == .needsReview }.count }
 
+    /// The register in roster order — the order the group was entered in,
+    /// which is the order the register has to be read back in.
+    ///
+    /// `records` is sorted by name so the review list reads alphabetically, but
+    /// transcribing attendance onto an external platform means walking the
+    /// official list top to bottom. Re-sorting by name at that moment turns a
+    /// copying job into a searching job, once per student.
+    ///
+    /// A record whose student is no longer on the snapshot keeps its place at
+    /// the end rather than being dropped: an unexpected row is still evidence.
+    public var recordsInRosterOrder: [AttendanceRecord] {
+        var byStudent: [UUID: AttendanceRecord] = [:]
+        for record in records { byStudent[record.studentID] = record }
+
+        var ordered = rosterSnapshot.compactMap { byStudent[$0.id] }
+        let placed = Set(ordered.map(\.studentID))
+        ordered.append(contentsOf: records.filter { !placed.contains($0.studentID) })
+        return ordered
+    }
+
     public func observation(withID id: UUID) -> ParticipantObservation? {
         observations.first { $0.id == id }
     }
