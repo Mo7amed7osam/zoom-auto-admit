@@ -92,7 +92,9 @@ final class AIDetailsWindowTests: XCTestCase {
         // The blank window was a zero-sized document view inside the scroller:
         // the text existed, it just had nowhere to be drawn.
         let container = try XCTUnwrap(text.textContainer)
-        XCTAssertEqual(container.size.width, scroll.contentSize.width, accuracy: 0.5)
+        // The container is the view width less the horizontal text inset.
+        let expectedContainerWidth = scroll.contentSize.width - (text.textContainerInset.width * 2)
+        XCTAssertEqual(container.size.width, expectedContainerWidth, accuracy: 0.5)
         XCTAssertEqual(text.frame.width, scroll.contentSize.width, accuracy: 0.5)
         XCTAssertGreaterThan(text.frame.height, 0)
 
