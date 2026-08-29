@@ -9,15 +9,33 @@ public struct SchedulerRuntimeState: Codable, Equatable {
     public var firedOccurrences: [String: Date]
     /// Schedule id → when Auto Admit should stop for the occurrence in progress.
     public var monitoringDeadlines: [String: Date]
+    /// Schedule id → the occurrence already checked ahead of time.
+    public var preflightedOccurrences: [String: Date]
 
     public init(
         lastCheck: Date? = nil,
         firedOccurrences: [String: Date] = [:],
-        monitoringDeadlines: [String: Date] = [:]
+        monitoringDeadlines: [String: Date] = [:],
+        preflightedOccurrences: [String: Date] = [:]
     ) {
         self.lastCheck = lastCheck
         self.firedOccurrences = firedOccurrences
         self.monitoringDeadlines = monitoringDeadlines
+        self.preflightedOccurrences = preflightedOccurrences
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case lastCheck, firedOccurrences, monitoringDeadlines, preflightedOccurrences
+    }
+
+    // State written before pre-flight existed must keep loading.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        lastCheck = try container.decodeIfPresent(Date.self, forKey: .lastCheck)
+        firedOccurrences = try container.decodeIfPresent([String: Date].self, forKey: .firedOccurrences) ?? [:]
+        monitoringDeadlines = try container.decodeIfPresent([String: Date].self, forKey: .monitoringDeadlines) ?? [:]
+        preflightedOccurrences =
+            try container.decodeIfPresent([String: Date].self, forKey: .preflightedOccurrences) ?? [:]
     }
 }
 
@@ -59,10 +77,14 @@ public final class UserDefaultsRuntimeStateStore: SchedulerRuntimeStateStoring {
 public final class SchedulerService {
     public typealias FireHandler = (ZoomSchedule, ZoomAccountProfile, Date) -> Void
     public typealias EndHandler = (ZoomSchedule) -> Void
+    /// Called ahead of an occurrence so problems surface while they are fixable.
+    public typealias PreflightHandler = (ZoomSchedule, ZoomAccountProfile?, Date) -> Void
 
     /// How far back a freshly launched app will look for an occurrence it missed.
     public static let catchUpWindow: TimeInterval = 15 * 60
     public static let tickInterval: TimeInterval = 15
+    /// How far ahead of a start time the pre-flight check runs.
+    public static let preflightLead: TimeInterval = 5 * 60
 
     private let logger = Logger(subsystem: "com.mohamedhosam.ZoomAutoAdmit", category: "scheduler")
     private let queue = DispatchQueue(label: "com.mohamedhosam.ZoomAutoAdmit.scheduler")
@@ -71,6 +93,7 @@ public final class SchedulerService {
     private let clock: () -> Date
     private let onFire: FireHandler
     private let onMonitoringEnd: EndHandler
+    private let onPreflight: PreflightHandler?
 
     private var configuration = SchedulerConfiguration()
     private var runtimeState: SchedulerRuntimeState
@@ -82,7 +105,8 @@ public final class SchedulerService {
         calendar: Calendar = .current,
         clock: @escaping () -> Date = { Date() },
         onFire: @escaping FireHandler,
-        onMonitoringEnd: @escaping EndHandler
+        onMonitoringEnd: @escaping EndHandler,
+        onPreflight: PreflightHandler? = nil
     ) {
         self.configuration = configuration
         self.runtimeStore = runtimeStore
@@ -90,6 +114,7 @@ public final class SchedulerService {
         self.clock = clock
         self.onFire = onFire
         self.onMonitoringEnd = onMonitoringEnd
+        self.onPreflight = onPreflight
         self.runtimeState = runtimeStore.loadRuntimeState()
     }
 
@@ -100,6 +125,8 @@ public final class SchedulerService {
             let liveIDs = Set(configuration.schedules.map { $0.id.uuidString })
             runtimeState.firedOccurrences = runtimeState.firedOccurrences.filter { liveIDs.contains($0.key) }
             runtimeState.monitoringDeadlines = runtimeState.monitoringDeadlines.filter { liveIDs.contains($0.key) }
+            runtimeState.preflightedOccurrences =
+                runtimeState.preflightedOccurrences.filter { liveIDs.contains($0.key) }
             runtimeStore.saveRuntimeState(runtimeState)
         }
     }
@@ -175,6 +202,35 @@ public final class SchedulerService {
 
     // MARK: Evaluation
 
+    /// Fires the check for occurrences whose lead time has just passed.
+    ///
+    /// The window is shifted forward by the lead, so an occurrence at 18:00 is
+    /// checked when the clock reaches 17:55.
+    private func evaluatePreflightLocked(at now: Date, windowStart: Date) {
+        for schedule in configuration.schedules where schedule.isEnabled {
+            let occurrences = ScheduleTimeline.occurrences(
+                of: schedule,
+                after: windowStart.addingTimeInterval(Self.preflightLead),
+                through: now.addingTimeInterval(Self.preflightLead),
+                calendar: calendar
+            )
+            guard let occurrence = occurrences.last else { continue }
+
+            let key = schedule.id.uuidString
+            if let checked = runtimeState.preflightedOccurrences[key],
+               abs(checked.timeIntervalSince(occurrence)) < 1 {
+                continue
+            }
+            // Never check something that has already started.
+            guard occurrence > now else { continue }
+
+            runtimeState.preflightedOccurrences[key] = occurrence
+            runtimeStore.saveRuntimeState(runtimeState)
+            logger.notice("Pre-flight check for \(schedule.name, privacy: .public)")
+            onPreflight?(schedule, configuration.profile(for: schedule), occurrence)
+        }
+    }
+
     private func evaluateLocked(at now: Date) {
         let windowStart = max(
             runtimeState.lastCheck ?? now.addingTimeInterval(-Self.catchUpWindow),
@@ -204,6 +260,10 @@ public final class SchedulerService {
             runtimeStore.saveRuntimeState(runtimeState)
             logger.notice("Schedule fired: \(schedule.name, privacy: .public)")
             onFire(schedule, profile, occurrence)
+        }
+
+        if onPreflight != nil {
+            evaluatePreflightLocked(at: now, windowStart: windowStart)
         }
 
         for (key, deadline) in runtimeState.monitoringDeadlines where deadline <= now {

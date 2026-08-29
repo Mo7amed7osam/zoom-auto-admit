@@ -14,6 +14,17 @@ final class AttendanceWindowController: NSWindowController {
     private var sessions: [AttendanceSession] = []
     private var selectedSession: AttendanceSession?
 
+    /// The register, grouped by status. Needs Review comes first: it is the
+    /// only section that asks anything of the reader.
+    private enum ListItem {
+        case header(title: String, count: Int, tint: NSColor)
+        case record(AttendanceRecord)
+        /// A Zoom identity that matched nobody on the roster.
+        case unresolved(ParticipantObservation)
+    }
+    private var items: [ListItem] = []
+    private let searchField = NSSearchField()
+
     private let sessionPopUp = NSPopUpButton()
     /// Present / Needs Review / Absent, as a summary strip.
     private let statStrip = NSStackView()
@@ -24,6 +35,14 @@ final class AttendanceWindowController: NSWindowController {
     private let finalizeButton = NSButton(title: "Finalize Attendance", target: nil, action: nil)
     private let aiButton = NSButton(title: "Match with AI", target: nil, action: nil)
     private let exportButton = NSButton(title: "Export CSV…", target: nil, action: nil)
+    private let aiDetailsButton = NSButton(title: "AI Details…", target: nil, action: nil)
+    /// Kept so the last exchange can be inspected after the fact.
+    private struct AIExchangeRecord {
+        let exchange: OpenRouterClient.Exchange
+        let summary: AIReconciliation.Summary?
+    }
+    private var lastExchange: AIExchangeRecord?
+    private var aiDetailsWindow: NSWindow?
 
     init(
         store: AttendanceStore,
@@ -114,14 +133,27 @@ final class AttendanceWindowController: NSWindowController {
         exportButton.target = self
         exportButton.action = #selector(exportCSV)
 
-        let actions = NSStackView(views: [aiButton, finalizeButton, NSView(), exportButton])
+        aiDetailsButton.target = self
+        aiDetailsButton.action = #selector(showAIDetails)
+        aiDetailsButton.isEnabled = false
+        aiDetailsButton.bezelStyle = .rounded
+        aiDetailsButton.toolTip = "See what was sent to the model and what it replied."
+
+        let actions = NSStackView(views: [aiButton, aiDetailsButton, finalizeButton, NSView(), exportButton])
         actions.orientation = .horizontal
         actions.spacing = 10
 
         statStrip.orientation = .horizontal
         statStrip.spacing = 10
 
-        let header = NSStackView(views: [summaryLabel, statusLabel, sessionPopUp, statStrip])
+        searchField.placeholderString = "Search students"
+        searchField.target = self
+        searchField.action = #selector(searchChanged)
+        searchField.sendsSearchStringImmediately = false
+        searchField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+
+        let pickerRow = DesignKit.horizontal([sessionPopUp, searchField], spacing: 12)
+        let header = NSStackView(views: [summaryLabel, statusLabel, pickerRow, statStrip])
         header.orientation = .vertical
         header.alignment = .leading
         header.spacing = 10
@@ -186,6 +218,54 @@ final class AttendanceWindowController: NSWindowController {
         refresh()
     }
 
+    private func rebuildItems() {
+        guard let session = selectedSession else {
+            items = []
+            return
+        }
+
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let visible = session.records.filter { record in
+            guard !query.isEmpty else { return true }
+            return record.studentName.lowercased().contains(query)
+                || (record.matchedZoomName?.lowercased().contains(query) ?? false)
+        }
+
+        let order: [(AttendanceStatus, String, NSColor)] = [
+            (.needsReview, "Needs Review", .systemOrange),
+            (.present, "Present", .systemGreen),
+            (.notSeenYet, "Not Seen Yet", .secondaryLabelColor),
+            (.absent, "Absent", .systemRed)
+        ]
+
+        items = order.flatMap { status, title, tint -> [ListItem] in
+            let matching = visible.filter { $0.status == status }
+            guard !matching.isEmpty else { return [] }
+            return [.header(title: title, count: matching.count, tint: tint)]
+                + matching.map { ListItem.record($0) }
+        }
+
+        // Zoom identities nobody on the roster claimed. These are the other half
+        // of the reconciliation: a student is only missing because some name
+        // went unrecognised, and this is where that name is.
+        let claimed = Set(
+            session.records
+                .filter { $0.status == .present || $0.status == .needsReview }
+                .compactMap(\.matchedObservationID)
+        )
+        let unresolved = session.observations
+            .filter { !claimed.contains($0.id) }
+            .filter { observation in
+                guard !query.isEmpty else { return true }
+                return observation.rawName.lowercased().contains(query)
+            }
+
+        if !unresolved.isEmpty {
+            items.append(.header(title: "Unmatched Zoom Names", count: unresolved.count, tint: .systemPurple))
+            items.append(contentsOf: unresolved.map { ListItem.unresolved($0) })
+        }
+    }
+
     private func refresh() {
         guard let session = selectedSession else {
             summaryLabel.stringValue = "No attendance yet"
@@ -194,6 +274,7 @@ final class AttendanceWindowController: NSWindowController {
             finalizeButton.isEnabled = false
             aiButton.isEnabled = false
             exportButton.isEnabled = false
+            rebuildItems()
             table.reloadData()
             return
         }
@@ -249,6 +330,12 @@ final class AttendanceWindowController: NSWindowController {
             : "Add an OpenRouter API key in Settings to enable AI matching."
         exportButton.isEnabled = true
 
+        rebuildItems()
+        table.reloadData()
+    }
+
+    @objc private func searchChanged() {
+        rebuildItems()
         table.reloadData()
     }
 
@@ -306,7 +393,16 @@ final class AttendanceWindowController: NSWindowController {
         guard let session = selectedSession else { return }
         let (request, ids) = AIReconciliation.request(for: session)
         guard request.isWorthSending else {
-            presentInfo("Nothing to match", detail: "Local matching already resolved everything it could.")
+            presentInfo(
+                "Nothing to send",
+                detail: """
+                Local matching already resolved everything it could, so there is \
+                nothing ambiguous left to ask about.
+
+                Students still unresolved: \(request.students.count)
+                Zoom names still unclaimed: \(request.observedNames.count)
+                """
+            )
             return
         }
 
@@ -316,40 +412,174 @@ final class AttendanceWindowController: NSWindowController {
         let client = OpenRouterClient(configuration: .init(model: SchedulerDefaults.aiModel))
 
         Task { [weak self] in
-            let result = await client.proposeMatches(for: request)
+            let exchange = await client.proposeMatches(for: request)
             await MainActor.run {
                 guard let self else { return }
                 self.aiButton.title = "Match with AI"
                 self.aiButton.isEnabled = true
 
-                switch result {
-                case .success(let response):
-                    let summary = AIReconciliation.apply(
-                        response,
-                        to: session,
-                        ids: ids,
-                        autoAcceptConfidence: threshold
-                    )
-                    self.update(summary.session)
-                    var detail = """
-                    \(summary.appliedCount) matched
-                    \(summary.reviewCount) need review
-                    \(summary.unmatchedObservedNameCount) Zoom name(s) unmatched
-                    """
-                    if !summary.rejected.isEmpty {
-                        detail += "\n\(summary.rejected.count) proposal(s) were rejected as unusable."
-                    }
-                    self.presentInfo("AI matching finished", detail: detail)
-
-                case .failure(let error):
+                guard let response = exchange.response else {
                     // Local results stand; nothing is lost.
+                    self.lastExchange = AIExchangeRecord(exchange: exchange, summary: nil)
+                    self.aiDetailsButton.isEnabled = true
                     self.presentInfo(
                         "AI matching unavailable",
-                        detail: "\(error.message)\n\nThe attendance recorded locally is unchanged."
+                        detail: """
+                        \(exchange.error?.message ?? "Unknown error")
+
+                        The attendance recorded locally is unchanged. \
+                        Open AI Details to see exactly what was sent.
+                        """
                     )
+                    return
                 }
+
+                let summary = AIReconciliation.apply(
+                    response,
+                    to: session,
+                    ids: ids,
+                    autoAcceptConfidence: threshold
+                )
+                self.lastExchange = AIExchangeRecord(exchange: exchange, summary: summary)
+                self.aiDetailsButton.isEnabled = true
+                self.update(summary.session)
+
+                var detail = """
+                \(summary.appliedCount) matched
+                \(summary.reviewCount) need review
+                \(summary.unmatchedObservedNameCount) Zoom name(s) still unmatched
+                """
+                if !summary.rejected.isEmpty {
+                    detail += "\n\n\(summary.rejected.count) proposal(s) were rejected as unusable."
+                }
+                detail += "\n\nOpen AI Details to see the request and the reply."
+                self.presentInfo("AI matching finished", detail: detail)
             }
         }
+    }
+
+    /// Shows exactly what left the machine and exactly what came back.
+    ///
+    /// Without this, a run that matches nothing is indistinguishable from a run
+    /// that never sent the name in the first place.
+    @objc private func showAIDetails() {
+        guard let record = lastExchange else { return }
+        presentText(
+            title: "AI Matching Details",
+            body: Self.aiDetailsReport(
+                exchange: record.exchange,
+                summary: record.summary,
+                model: SchedulerDefaults.aiModel
+            )
+        )
+    }
+
+    /// The transcript itself, built without touching any view, so what the
+    /// window is supposed to show can be asserted directly.
+    static func aiDetailsReport(
+        exchange: OpenRouterClient.Exchange,
+        summary: AIReconciliation.Summary?,
+        model: String
+    ) -> String {
+        var report = ["REQUEST SENT", ""]
+        report.append("Model: \(model)")
+        report.append("Students sent (\(exchange.request.students.count)):")
+        for student in exchange.request.students {
+            report.append("  [\(student.id)] \(student.officialName)")
+        }
+        report.append("")
+        report.append("Zoom names sent (\(exchange.request.observedNames.count)):")
+        for name in exchange.request.observedNames {
+            report.append("  [\(name.id)] \(name.displayName)")
+        }
+        report.append("")
+        report.append("Prompt:")
+        report.append(exchange.prompt)
+
+        report.append("")
+        report.append("──────────────────────────────")
+        report.append("RESPONSE RECEIVED")
+        report.append("")
+        if let status = exchange.httpStatus { report.append("HTTP \(status), attempts: \(exchange.attempts)") }
+        if let error = exchange.error { report.append("Error: \(error.message)") }
+        report.append(exchange.rawResponse ?? "(nothing came back)")
+
+        if let summary {
+            report.append("")
+            report.append("──────────────────────────────")
+            report.append("WHAT WAS APPLIED")
+            report.append("")
+            report.append("Accepted as Present: \(summary.appliedCount)")
+            report.append("Sent to Needs Review: \(summary.reviewCount)")
+            report.append("Zoom names still unmatched: \(summary.unmatchedObservedNameCount)")
+            if summary.rejected.isEmpty {
+                report.append("Rejected proposals: none")
+            } else {
+                report.append("")
+                report.append("Rejected proposals (\(summary.rejected.count)):")
+                // These are the model's own answers that failed validation.
+                for reason in summary.rejected { report.append("  • \(reason)") }
+            }
+        }
+
+        return report.joined(separator: "\n")
+    }
+
+    private func presentText(title: String, body: String) {
+        let frame = NSRect(x: 0, y: 0, width: 700, height: 560)
+        let window = NSWindow(
+            contentRect: frame,
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = title
+        window.center()
+        // The reference below is the only one; without this the window is freed
+        // underneath it when closed.
+        window.isReleasedWhenClosed = false
+
+        window.contentView = Self.makeTextView(body: body, frame: frame)
+
+        aiDetailsWindow = window
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// A scrolling, read-only text view that actually lays its text out.
+    ///
+    /// A bare `NSTextView()` has a zero frame, and therefore a zero-width text
+    /// container, which lays out no glyphs at all: the window comes up empty.
+    /// It has to be sized to the clip view and told to track its width.
+    static func makeTextView(body: String, frame: NSRect) -> NSScrollView {
+        let scroll = NSScrollView(frame: frame)
+        scroll.hasVerticalScroller = true
+        scroll.autoresizingMask = [.width, .height]
+        scroll.borderType = .noBorder
+
+        let contentSize = scroll.contentSize
+        let text = NSTextView(frame: NSRect(origin: .zero, size: contentSize))
+        text.minSize = NSSize(width: 0, height: 0)
+        text.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        text.isVerticallyResizable = true
+        text.isHorizontallyResizable = false
+        text.autoresizingMask = [.width]
+        text.textContainer?.containerSize = NSSize(
+            width: contentSize.width,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        text.textContainer?.widthTracksTextView = true
+        text.isEditable = false
+        text.isSelectable = true
+        text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        text.textContainerInset = NSSize(width: 14, height: 14)
+        text.string = body
+
+        scroll.documentView = text
+        return scroll
     }
 
     @objc private func exportCSV() {
@@ -381,78 +611,260 @@ final class AttendanceWindowController: NSWindowController {
 // MARK: - Rows
 
 extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        selectedSession?.records.count ?? 0
+    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+        guard items.indices.contains(row) else { return false }
+        if case .header = items[row] { return true }
+        return false
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        guard items.indices.contains(row) else { return 44 }
+        switch items[row] {
+        case .header: return 30
+        case .record(let record): return record.matchedZoomName == nil ? 44 : 60
+        case .unresolved: return 52
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        // Section headings are not selectable.
+        guard items.indices.contains(row) else { return false }
+        if case .header = items[row] { return false }
+        return true
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let session = selectedSession, session.records.indices.contains(row) else { return nil }
-        let record = session.records[row]
+        guard items.indices.contains(row) else { return nil }
+        switch items[row] {
+        case .header(let title, let count, let tint):
+            return sectionHeaderView(title: title, count: count, tint: tint)
+        case .record(let record):
+            return recordView(record, row: row)
+        case .unresolved(let observation):
+            return unresolvedView(observation, row: row)
+        }
+    }
+
+    /// One observed Zoom identity that matched nobody, with a way to assign it.
+    private func unresolvedView(_ observation: ParticipantObservation, row: Int) -> NSView {
+        let marker = NSImageView()
+        marker.image = NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: nil)
+        marker.contentTintColor = .systemPurple
+        marker.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        marker.widthAnchor.constraint(equalToConstant: 20).isActive = true
+
+        let name = NSTextField(labelWithString: observation.rawName)
+        name.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        name.lineBreakMode = .byTruncatingTail
+
+        var evidence = "seen in \(observation.observationCount) snapshot"
+            + (observation.observationCount == 1 ? "" : "s")
+        if let first = observation.firstObservedAt, let last = observation.lastObservedAt {
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+            formatter.dateStyle = .none
+            evidence = "seen \(formatter.string(from: first))–\(formatter.string(from: last)) · " + evidence
+        }
+        let detail = NSTextField(labelWithString: evidence)
+        detail.font = .systemFont(ofSize: 11)
+        detail.textColor = .secondaryLabelColor
+        detail.lineBreakMode = .byTruncatingTail
+
+        let text = NSStackView(views: [name, detail])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+
+        let assign = NSButton(title: "Assign to student…", target: self, action: #selector(assignUnresolved(_:)))
+        assign.tag = row
+        assign.controlSize = .small
+        assign.bezelStyle = .rounded
+
+        let stack = NSStackView(views: [marker, text, NSView(), assign])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+        return stack
+    }
+
+    /// The reverse of Match…: start from the Zoom name and pick the student.
+    @objc private func assignUnresolved(_ sender: NSButton) {
+        guard let session = selectedSession,
+              items.indices.contains(sender.tag),
+              case .unresolved(let observation) = items[sender.tag] else {
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Who is “\(observation.rawName)”?"
+        alert.informativeText = "Pick the official student this Zoom name belongs to."
+
+        let popUp = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 25))
+        let candidates = session.rosterSnapshot.sorted {
+            $0.officialName.localizedCompare($1.officialName) == .orderedAscending
+        }
+        for student in candidates { popUp.addItem(withTitle: student.officialName) }
+        guard !candidates.isEmpty else { return }
+
+        let remember = NSButton(checkboxWithTitle: "Remember this name for future meetings", target: nil, action: nil)
+        remember.state = .on
+        remember.frame = NSRect(x: 0, y: 0, width: 320, height: 20)
+
+        let accessory = NSStackView(views: [popUp, remember])
+        accessory.orientation = .vertical
+        accessory.alignment = .leading
+        accessory.spacing = 8
+        accessory.frame = NSRect(x: 0, y: 0, width: 320, height: 56)
+        alert.accessoryView = accessory
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Assign")
+
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        let student = candidates[popUp.indexOfSelectedItem]
+
+        update(AttendanceReconciler.applyManualMatch(
+            session: session,
+            studentID: student.id,
+            observationID: observation.id,
+            status: .present
+        ))
+        if remember.state == .on {
+            learnAlias(observation.rawName, studentID: student.id, groupID: session.groupID)
+        }
+    }
+
+    /// A status heading with its own count, so the shape of the class is
+    /// readable at a glance instead of having to be counted.
+    private func sectionHeaderView(title: String, count: Int, tint: NSColor) -> NSView {
+        let label = NSTextField(labelWithString: title.uppercased())
+        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.textColor = tint
+
+        let countLabel = NSTextField(labelWithString: String(count))
+        countLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        countLabel.textColor = .tertiaryLabelColor
+
+        let stack = NSStackView(views: [label, countLabel])
+        stack.orientation = .horizontal
+        stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 6, bottom: 2, right: 6)
+        return stack
+    }
+
+    private func recordView(_ record: AttendanceRecord, row: Int) -> NSView {
+        guard let session = selectedSession else { return NSView() }
 
         let marker = NSImageView()
         marker.image = NSImage(systemSymbolName: symbolName(for: record.status), accessibilityDescription: nil)
         marker.contentTintColor = color(for: record.status)
-        marker.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        marker.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
         marker.widthAnchor.constraint(equalToConstant: 20).isActive = true
 
         let name = NSTextField(labelWithString: record.studentName)
         name.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        name.lineBreakMode = .byTruncatingTail
 
-        var detailParts = [AttendanceExport.displayStatus(record.status)]
-        if let zoomName = record.matchedZoomName {
-            detailParts.append("Zoom: \(zoomName)")
+        var textViews: [NSView] = [name]
+        if let evidence = evidenceLine(for: record, in: session) {
+            let detail = NSTextField(labelWithString: evidence)
+            detail.font = .systemFont(ofSize: 11)
+            detail.textColor = .secondaryLabelColor
+            detail.lineBreakMode = .byTruncatingTail
+            textViews.append(detail)
         }
-        if let confidence = record.confidence, record.matchSource != .manual {
-            detailParts.append("\(Int(confidence * 100))%")
+
+        let text = NSStackView(views: textViews)
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+
+        var controls: [NSView] = [marker, text, NSView()]
+        if let confidence = record.confidence, record.matchSource != .manual, record.status != .absent {
+            controls.append(confidencePill(confidence))
         }
-        if record.matchSource != .none {
-            detailParts.append(record.isManual ? "manual" : record.matchSource.rawValue)
-        }
-        // Snapshot evidence, phrased as evidence. Nothing here says the student
-        // was present continuously between the first and last sighting.
+        controls.append(contentsOf: actionButtons(for: record, row: row, session: session))
+
+        let stack = NSStackView(views: controls)
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 8
+        stack.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+        return stack
+    }
+
+    /// Evidence, phrased as evidence: a sighting is not a presence duration.
+    private func evidenceLine(for record: AttendanceRecord, in session: AttendanceSession) -> String? {
+        guard let zoomName = record.matchedZoomName else { return nil }
+        var parts = ["Zoom: \(zoomName)"]
+
         if let observation = record.matchedObservationID.flatMap({ session.observation(withID: $0) }),
            let first = observation.firstObservedAt,
            let last = observation.lastObservedAt {
             let formatter = DateFormatter()
             formatter.timeStyle = .short
             formatter.dateStyle = .none
-            detailParts.append(
-                "first observed \(formatter.string(from: first)) · "
-                + "last observed \(formatter.string(from: last)) · "
-                + "seen in \(observation.observationCount) snapshot\(observation.observationCount == 1 ? "" : "s")"
+            let seen = observation.observationCount
+            parts.append(
+                "seen \(formatter.string(from: first))–\(formatter.string(from: last))"
+                + " in \(seen) snapshot\(seen == 1 ? "" : "s")"
             )
         }
+        if record.isManual { parts.append("set manually") }
+        else if record.matchSource != .none { parts.append(record.matchSource.rawValue) }
+        return parts.joined(separator: " · ")
+    }
 
-        let detail = NSTextField(labelWithString: detailParts.joined(separator: " · "))
-        detail.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        detail.textColor = .secondaryLabelColor
+    private func confidencePill(_ confidence: Double) -> NSView {
+        let label = NSTextField(labelWithString: "\(Int(confidence * 100))%")
+        label.font = .systemFont(ofSize: 10, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .center
 
-        let text = NSStackView(views: [name, detail])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 1
+        let pill = NSView()
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.25).cgColor
+        pill.layer?.cornerRadius = 7
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        label.translatesAutoresizingMaskIntoConstraints = false
+        pill.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 7),
+            label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -7),
+            label.topAnchor.constraint(equalTo: pill.topAnchor, constant: 2),
+            label.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -2)
+        ])
+        return pill
+    }
 
-        let matchButton = NSButton(title: "Match…", target: self, action: #selector(matchRow(_:)))
-        matchButton.tag = row
-        matchButton.isEnabled = !session.observations.isEmpty
-        matchButton.controlSize = .small
+    /// Only the actions that make sense for the row's current status.
+    private func actionButtons(
+        for record: AttendanceRecord,
+        row: Int,
+        session: AttendanceSession
+    ) -> [NSView] {
+        var buttons: [NSButton] = []
 
-        let absentButton = NSButton(title: "Absent", target: self, action: #selector(markAbsentRow(_:)))
-        absentButton.tag = row
-        absentButton.controlSize = .small
+        if record.status != .present || record.matchedObservationID == nil {
+            let match = NSButton(title: "Match…", target: self, action: #selector(matchRow(_:)))
+            match.isEnabled = !session.observations.isEmpty
+            buttons.append(match)
+        }
+        if record.status != .absent {
+            buttons.append(NSButton(title: "Absent", target: self, action: #selector(markAbsentRow(_:))))
+        }
+        if record.isManual {
+            buttons.append(NSButton(title: "Clear", target: self, action: #selector(clearRow(_:))))
+        }
 
-        let clearButton = NSButton(title: "Clear", target: self, action: #selector(clearRow(_:)))
-        clearButton.tag = row
-        clearButton.isEnabled = record.isManual
-        clearButton.controlSize = .small
-
-        [matchButton, absentButton, clearButton].forEach { $0.bezelStyle = .rounded }
-
-        let row = NSStackView(views: [marker, text, NSView(), matchButton, absentButton, clearButton])
-        row.orientation = .horizontal
-        row.spacing = 8
-        row.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
-        return row
+        for button in buttons {
+            button.tag = row
+            button.controlSize = .small
+            button.bezelStyle = .rounded
+        }
+        return buttons
     }
 
     private func symbolName(for status: AttendanceStatus) -> String {
@@ -473,10 +885,14 @@ extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate
         }
     }
 
-    /// Manual matching, plus the offer to remember the name for next time.
+    /// Row tags index into `items`, which mixes headers and records.
+    private func record(atRow row: Int) -> AttendanceRecord? {
+        guard items.indices.contains(row), case .record(let record) = items[row] else { return nil }
+        return record
+    }
+
     @objc private func matchRow(_ sender: NSButton) {
-        guard let session = selectedSession, session.records.indices.contains(sender.tag) else { return }
-        let record = session.records[sender.tag]
+        guard let session = selectedSession, let record = record(atRow: sender.tag) else { return }
 
         let alert = NSAlert()
         alert.messageText = "Match \(record.studentName)"
@@ -531,21 +947,18 @@ extension AttendanceWindowController: NSTableViewDataSource, NSTableViewDelegate
     }
 
     @objc private func markAbsentRow(_ sender: NSButton) {
-        guard let session = selectedSession, session.records.indices.contains(sender.tag) else { return }
+        guard let session = selectedSession, let record = record(atRow: sender.tag) else { return }
         update(AttendanceReconciler.applyManualMatch(
             session: session,
-            studentID: session.records[sender.tag].studentID,
+            studentID: record.studentID,
             observationID: nil,
             status: .absent
         ))
     }
 
     @objc private func clearRow(_ sender: NSButton) {
-        guard let session = selectedSession, session.records.indices.contains(sender.tag) else { return }
-        let cleared = AttendanceReconciler.clearMatch(
-            session: session,
-            studentID: session.records[sender.tag].studentID
-        )
+        guard let session = selectedSession, let record = record(atRow: sender.tag) else { return }
+        let cleared = AttendanceReconciler.clearMatch(session: session, studentID: record.studentID)
         update(AttendanceReconciler.reconcile(
             session: cleared,
             autoAcceptConfidence: autoAcceptConfidence(for: session),

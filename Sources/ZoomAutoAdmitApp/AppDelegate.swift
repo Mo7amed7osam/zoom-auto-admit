@@ -67,6 +67,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
         SchedulerLog.shared.write("[attendance] lifecycle-wired=true")
+        // A relaunch mid-class must not abandon the register: the session
+        // is on disk, only the timer needs restarting.
+        attendanceCoordinator.resumeOpenSession(
+            configuration: schedulerCoordinator.currentConfiguration
+        )
         menuBarController.schedulerConfiguration = { [weak self] in
             self?.schedulerCoordinator.currentConfiguration ?? SchedulerConfiguration()
         }

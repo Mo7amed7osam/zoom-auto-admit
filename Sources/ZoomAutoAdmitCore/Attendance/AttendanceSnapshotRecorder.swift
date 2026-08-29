@@ -21,9 +21,19 @@ public final class AttendanceSnapshotRecorder {
     private var indexByNormalizedName: [String: Int] = [:]
     private let group: StudentGroup
 
-    public init(group: StudentGroup, existing: [ParticipantObservation] = []) {
+    /// `existingSnapshots` and `missedSnapshots` matter when a register is
+    /// picked back up after the app restarted mid-meeting: without them the
+    /// recorder would look brand new and re-run the meeting-started snapshot.
+    public init(
+        group: StudentGroup,
+        existing: [ParticipantObservation] = [],
+        existingSnapshots: [AttendanceSnapshot] = [],
+        missedSnapshots: Int = 0
+    ) {
         self.group = group
         self.observations = existing
+        self.snapshots = existingSnapshots
+        self.missedSnapshots = missedSnapshots
         for (index, observation) in existing.enumerated() {
             indexByNormalizedName[observation.normalizedName] = index
         }

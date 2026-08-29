@@ -87,17 +87,60 @@ public final class OpenRouterClient {
         """
     }
 
+    /// Everything about one exchange, so what was asked and what came back can
+    /// both be shown.
+    ///
+    /// "It matched nothing" is not a useful answer by itself: the question is
+    /// always whether the name was even sent, and what the model said about it.
+    public struct Exchange {
+        public let request: AIMatchRequest
+        /// The exact user message that was sent.
+        public let prompt: String
+        /// The model's reply, verbatim, before any parsing.
+        public let rawResponse: String?
+        public let response: AIMatchResponse?
+        public let error: AIMatchError?
+        public let httpStatus: Int?
+        public let attempts: Int
+
+        public var succeeded: Bool { response != nil }
+
+        public init(
+            request: AIMatchRequest,
+            prompt: String,
+            rawResponse: String? = nil,
+            response: AIMatchResponse? = nil,
+            error: AIMatchError? = nil,
+            httpStatus: Int? = nil,
+            attempts: Int = 0
+        ) {
+            self.request = request
+            self.prompt = prompt
+            self.rawResponse = rawResponse
+            self.response = response
+            self.error = error
+            self.httpStatus = httpStatus
+            self.attempts = attempts
+        }
+    }
+
     /// Sends the request. Never logs the key or the Authorization header.
-    public func proposeMatches(for request: AIMatchRequest) async -> Swift.Result<AIMatchResponse, AIMatchError> {
+    public func proposeMatches(for request: AIMatchRequest) async -> Exchange {
+        let prompt = Self.prompt(for: request)
+
         guard request.isWorthSending else {
-            return .success(AIMatchResponse(
-                matches: [],
-                unmatchedStudentIDs: request.students.map(\.id),
-                unmatchedObservedNameIDs: request.observedNames.map(\.id)
-            ))
+            return Exchange(
+                request: request,
+                prompt: prompt,
+                response: AIMatchResponse(
+                    matches: [],
+                    unmatchedStudentIDs: request.students.map(\.id),
+                    unmatchedObservedNameIDs: request.observedNames.map(\.id)
+                )
+            )
         }
         guard let apiKey = apiKeyProvider(), !apiKey.isEmpty else {
-            return .failure(.noAPIKey)
+            return Exchange(request: request, prompt: prompt, error: .noAPIKey)
         }
 
         let body: [String: Any] = [
@@ -106,12 +149,16 @@ public final class OpenRouterClient {
             "response_format": ["type": "json_object"],
             "messages": [
                 ["role": "system", "content": "You reply with JSON only."],
-                ["role": "user", "content": Self.prompt(for: request)]
+                ["role": "user", "content": prompt]
             ]
         ]
 
         guard let payload = try? JSONSerialization.data(withJSONObject: body) else {
-            return .failure(.malformedResponse("request could not be encoded"))
+            return Exchange(
+                request: request,
+                prompt: prompt,
+                error: .malformedResponse("request could not be encoded")
+            )
         }
 
         var urlRequest = URLRequest(url: Self.endpoint)
@@ -122,8 +169,12 @@ public final class OpenRouterClient {
         urlRequest.httpBody = payload
 
         var lastError: AIMatchError = .network("no attempt was made")
+        var lastRaw: String?
+        var lastStatus: Int?
+        var used = 0
 
         for attempt in 1...configuration.maxAttempts {
+            used = attempt
             // Only counts and the model name are logged; never names, never the key.
             logger.info("AI matching attempt \(attempt) students=\(request.students.count) names=\(request.observedNames.count)")
             do {
@@ -132,18 +183,29 @@ public final class OpenRouterClient {
                     lastError = .network("no HTTP response")
                     continue
                 }
+                lastStatus = http.statusCode
                 guard (200..<300).contains(http.statusCode) else {
                     lastError = .httpStatus(http.statusCode)
+                    lastRaw = String(data: data, encoding: .utf8)
                     // Client-side errors will not improve on a retry.
                     if (400..<500).contains(http.statusCode), http.statusCode != 429 { break }
                     continue
                 }
                 guard let content = Self.extractContent(from: data) else {
                     lastError = .malformedResponse("no message content")
+                    lastRaw = String(data: data, encoding: .utf8)
                     continue
                 }
+                lastRaw = content
                 do {
-                    return .success(try AIMatchValidator.decode(content))
+                    return Exchange(
+                        request: request,
+                        prompt: prompt,
+                        rawResponse: content,
+                        response: try AIMatchValidator.decode(content),
+                        httpStatus: http.statusCode,
+                        attempts: attempt
+                    )
                 } catch let error as AIMatchError {
                     lastError = error
                     continue
@@ -157,7 +219,14 @@ public final class OpenRouterClient {
         }
 
         logger.notice("AI matching failed: \(lastError.message, privacy: .public)")
-        return .failure(lastError)
+        return Exchange(
+            request: request,
+            prompt: prompt,
+            rawResponse: lastRaw,
+            error: lastError,
+            httpStatus: lastStatus,
+            attempts: used
+        )
     }
 
     /// Pulls `choices[0].message.content` out of an OpenAI-shaped reply.

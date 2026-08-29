@@ -26,6 +26,10 @@ final class AttendanceCoordinator {
     private var group: StudentGroup?
     private var coalescer = PostAdmitCoalescer()
     private var schedule = SnapshotSchedule()
+    /// When a snapshot was last *attempted*, successful or not. Kept apart from
+    /// the recorder's `lastSnapshotAt`, which only counts readable lists.
+    private var lastAttemptAt: Date?
+    private var lastAttemptFailed = false
 
     private(set) var liveSummary: AttendanceLiveSummary?
     var onChange: (() -> Void)?
@@ -53,6 +57,8 @@ final class AttendanceCoordinator {
             self.schedule = SchedulerDefaults.snapshotSchedule
             self.recorder = AttendanceSnapshotRecorder(group: group)
             self.coalescer.reset()
+            self.lastAttemptAt = nil
+            self.lastAttemptFailed = false
             self.session = AttendanceSession(
                 groupID: group.id,
                 groupName: group.name,
@@ -83,6 +89,76 @@ final class AttendanceCoordinator {
             // Persist the empty evidence session immediately. This proves the
             // lifecycle is wired even if Zoom's first participant read fails.
             persistLocked(finalizing: false, at: now)
+        }
+    }
+
+    /// How long a register with no end time may stay open across a relaunch.
+    private static let maximumResumeAge: TimeInterval = 4 * 60 * 60
+
+    /// Picks a register back up after the app restarted mid-meeting.
+    ///
+    /// The session is already on disk — only the timer and the recorder live in
+    /// memory — so a relaunch would otherwise silently stop collecting evidence
+    /// while the class is still running, and empty the menu.
+    @discardableResult
+    func resumeOpenSession(
+        configuration: SchedulerConfiguration,
+        at now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        queue.sync {
+            guard timer == nil else { return false }
+            guard let open = store.loadAll().first(where: { $0.endedAt == nil }) else { return false }
+
+            guard let group = configuration.studentGroups.first(where: { $0.id == open.groupID }),
+                  let schedule = configuration.schedules.first(where: { $0.id == open.scheduleID }) else {
+                schedulerLog.write(
+                    "[attendance] resume-skipped id=\(open.id.uuidString) reason=schedule-or-group-missing"
+                )
+                return false
+            }
+
+            // Past its own end time it is not a live register any more. The
+            // scheduler's persisted deadline finalizes it on the next tick.
+            let deadline = ScheduleTimeline.endDate(for: schedule, startedAt: open.startedAt, calendar: calendar)
+                ?? open.startedAt.addingTimeInterval(Self.maximumResumeAge)
+            guard now < deadline else {
+                schedulerLog.write(
+                    "[attendance] resume-skipped id=\(open.id.uuidString) reason=past-end-time "
+                    + "deadline=\(Self.iso8601(deadline))"
+                )
+                return false
+            }
+
+            self.group = group
+            self.schedule = SchedulerDefaults.snapshotSchedule
+            self.session = open
+            self.coalescer.reset()
+            self.recorder = AttendanceSnapshotRecorder(
+                group: group,
+                existing: open.observations,
+                existingSnapshots: open.snapshots,
+                missedSnapshots: open.missedSnapshotCount
+            )
+            // A snapshot taken by the previous process still counts as the last
+            // attempt, so the menu does not claim the register is brand new.
+            self.lastAttemptAt = open.snapshots.map(\.capturedAt).max()
+            self.lastAttemptFailed = false
+
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + 3, repeating: Self.tickInterval, leeway: .seconds(1))
+            timer.setEventHandler { [weak self] in self?.tick() }
+            self.timer = timer
+            timer.resume()
+
+            schedulerLog.write(
+                "[attendance] session-resumed id=\(open.id.uuidString) "
+                + "schedule=\(schedule.id.uuidString) group=\(group.id.uuidString) "
+                + "snapshots=\(open.snapshots.count) union=\(open.observations.count) "
+                + "missed=\(open.missedSnapshotCount) deadline=\(Self.iso8601(deadline))"
+            )
+            persistLocked(finalizing: false, at: now)
+            return true
         }
     }
 
@@ -180,6 +256,8 @@ final class AttendanceCoordinator {
         schedulerLog.write(
             "[attendance] snapshot-request reason=\(reason.rawValue) at=\(Self.iso8601(now))"
         )
+        lastAttemptAt = now
+        lastAttemptFailed = true
         guard let recorder else {
             schedulerLog.write("[attendance] snapshot-failed reason=recorder-not-started")
             return
@@ -223,6 +301,7 @@ final class AttendanceCoordinator {
         )
 
         if let snapshot = recorder.capture(readout, reason: reason, at: now) {
+            lastAttemptFailed = false
             schedulerLog.write(
                 "[attendance] filtered=[\(snapshot.participants.map(\.rawZoomName).joined(separator: " | "))]"
             )
@@ -299,8 +378,12 @@ final class AttendanceCoordinator {
             observedIdentities: recorder.observedIdentityCount,
             matchedStudents: session.records.filter { $0.status == .present }.count,
             totalStudents: session.rosterSnapshot.count,
+            startedAt: session.startedAt,
             lastSnapshotAt: recorder.lastSnapshotAt,
+            lastAttemptAt: lastAttemptAt,
+            lastAttemptFailed: lastAttemptFailed,
             nextSnapshotAt: recorder.lastSnapshotAt.flatMap(schedule.nextPeriodicDate(after:)),
+            periodicEnabled: schedule.periodicEnabled,
             missedSnapshots: recorder.missedSnapshots
         )
         DispatchQueue.main.async { [weak self] in
@@ -321,31 +404,79 @@ struct AttendanceLiveSummary {
     let observedIdentities: Int
     let matchedStudents: Int
     let totalStudents: Int
+    let startedAt: Date
+    /// Last snapshot that actually read the participants list.
     let lastSnapshotAt: Date?
+    /// Last attempt, readable or not, so a stuck run is visible rather than silent.
+    let lastAttemptAt: Date?
+    let lastAttemptFailed: Bool
     let nextSnapshotAt: Date?
+    let periodicEnabled: Bool
     let missedSnapshots: Int
 
+    /// Recomputed on every menu open, so the relative times stay honest.
     var lines: [String] {
+        lines(now: Date())
+    }
+
+    func lines(now: Date) -> [String] {
         var result = [
             "Observed identities: \(observedIdentities)",
-            "Matched students: \(matchedStudents) / \(totalStudents)"
+            "Matched students: \(matchedStudents) / \(totalStudents)",
+            "Last attendance check: \(lastCheckText(now: now))",
+            "Next attendance check: \(nextCheckText(now: now))"
         ]
-        if let lastSnapshotAt {
-            result.append("Last snapshot: \(Self.formatter.string(from: lastSnapshotAt))")
-        }
-        if let nextSnapshotAt {
-            result.append("Next snapshot: \(Self.formatter.string(from: nextSnapshotAt))")
-        }
         if missedSnapshots > 0 {
             result.append("Missed snapshots: \(missedSnapshots)")
         }
         return result
     }
 
+    /// Always says something. A run that has captured nothing yet is a state the
+    /// user needs to see, not a reason to hide the row.
+    func lastCheckText(now: Date) -> String {
+        guard let lastSnapshotAt else {
+            guard let lastAttemptAt else {
+                return "None yet — class started \(Self.time(startedAt))"
+            }
+            return "\(Self.time(lastAttemptAt)) — list unreadable"
+        }
+        var text = "\(Self.time(lastSnapshotAt)) (\(Self.relative(lastSnapshotAt, now: now)))"
+        if lastAttemptFailed, let lastAttemptAt, lastAttemptAt > lastSnapshotAt {
+            text += " · retry \(Self.time(lastAttemptAt)) failed"
+        }
+        return text
+    }
+
+    func nextCheckText(now: Date) -> String {
+        guard periodicEnabled else { return "Periodic checks off" }
+        guard let nextSnapshotAt else {
+            // No readable list yet: the recorder retries on its own tick rather
+            // than waiting out a full interval.
+            return "Retrying until the list is readable"
+        }
+        if nextSnapshotAt <= now { return "Due now" }
+        return "\(Self.time(nextSnapshotAt)) (\(Self.relative(nextSnapshotAt, now: now)))"
+    }
+
+    private static func time(_ date: Date) -> String {
+        formatter.string(from: date)
+    }
+
+    private static func relative(_ date: Date, now: Date) -> String {
+        relativeFormatter.localizedString(for: date, relativeTo: now)
+    }
+
     private static let formatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
         formatter.dateStyle = .none
+        return formatter
+    }()
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
         return formatter
     }()
 }

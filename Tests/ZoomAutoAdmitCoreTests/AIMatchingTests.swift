@@ -159,7 +159,7 @@ final class OpenRouterRequestTests: XCTestCase {
         }
     }
 
-    func testNothingIsSentWhenThereIsNothingAmbiguous() async {
+    func testNothingIsSentWhenThereIsNothingAmbiguous() async throws {
         var called = false
         let client = OpenRouterClient(apiKeyProvider: {
             called = true
@@ -169,23 +169,22 @@ final class OpenRouterRequestTests: XCTestCase {
         let empty = AIMatchRequest(students: [], observedNames: [])
         XCTAssertFalse(empty.isWorthSending)
 
-        let result = await client.proposeMatches(for: empty)
-        guard case .success(let response) = result else { return XCTFail("expected success") }
+        let exchange = await client.proposeMatches(for: empty)
+        let response = try XCTUnwrap(exchange.response)
         XCTAssertTrue(response.matches.isEmpty)
         XCTAssertFalse(called, "no key is even read when there is nothing to ask")
     }
 
     func testMissingKeyIsReportedNotCrashed() async {
         let client = OpenRouterClient(apiKeyProvider: { nil })
-        let result = await client.proposeMatches(
-            for: AIMatchRequest(
-                students: [.init(id: "s0", officialName: "A")],
-                observedNames: [.init(id: "z0", displayName: "B")]
-            )
+        let exchange = await client.proposeMatches(
+            for: AIMatchRequest(students: [.init(id: "s0", officialName: "A")], observedNames: [.init(id: "z0", displayName: "B")])
         )
 
-        guard case .failure(let error) = result else { return XCTFail("expected failure") }
-        XCTAssertEqual(error, .noAPIKey)
+        XCTAssertNil(exchange.response)
+        XCTAssertEqual(exchange.error, .noAPIKey)
+        // The prompt is still captured, so the user can see what would have been sent.
+        XCTAssertFalse(exchange.prompt.isEmpty)
     }
 
     func testResponseContentExtraction() {

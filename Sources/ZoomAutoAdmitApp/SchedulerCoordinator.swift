@@ -62,6 +62,9 @@ final class SchedulerCoordinator {
             },
             onMonitoringEnd: { [weak self] schedule in
                 self?.handleMonitoringEnd(schedule: schedule)
+            },
+            onPreflight: { [weak self] schedule, profile, startsAt in
+                self?.runPreflight(schedule: schedule, profile: profile, startsAt: startsAt)
             }
         )
     }
@@ -155,6 +158,44 @@ final class SchedulerCoordinator {
             "\(profileName) · \(next.schedule.meeting.displayText)"
         ]
         DispatchQueue.main.async { [state] in state.setNextScheduleSummary(lines) }
+    }
+
+    /// Checks a schedule ahead of time and reports anything that would stop it.
+    ///
+    /// Read-only, and deliberately quiet when everything is fine: a
+    /// notification five minutes before every class would train the user to
+    /// ignore them.
+    private func runPreflight(schedule: ZoomSchedule, profile: ZoomAccountProfile?, startsAt: Date) {
+        workflowQueue.async { [weak self] in
+            guard let self else { return }
+            let report = PreflightChecker.check(
+                schedule: schedule,
+                profile: profile,
+                group: self.configuration.group(for: schedule),
+                startsAt: startsAt,
+                automation: self.automation
+            )
+
+            self.schedulerLog.write("──────── Pre-flight: \(report.scheduleName) ────────")
+            if report.issues.isEmpty {
+                self.schedulerLog.write("Pre-flight: ready")
+            } else {
+                for issue in report.issues {
+                    self.schedulerLog.write("Pre-flight [\(issue.severity.rawValue)] \(issue.kind.rawValue): \(issue.message)")
+                }
+            }
+
+            guard !report.issues.isEmpty else { return }
+            self.notify(
+                title: report.isReady
+                    ? "\(report.scheduleName) starts soon"
+                    : "\(report.scheduleName) needs attention",
+                body: report.detail
+            )
+            DispatchQueue.main.async { [state] in
+                state.setPreflightReport(report)
+            }
+        }
     }
 
     // MARK: Workflow

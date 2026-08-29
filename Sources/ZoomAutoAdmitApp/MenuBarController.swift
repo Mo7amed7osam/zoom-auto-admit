@@ -65,6 +65,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         addStatusSection()
         menu.addItem(.separator())
+        addPreflightSection()
         addNextMeetingSection()
         menu.addItem(.separator())
         addAttendanceSection()
@@ -108,6 +109,21 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 addDetail("Last: \(state.formattedLastAction)")
             }
         }
+    }
+
+    /// Shown between the pre-flight check and the class starting, which is the
+    /// window in which the user can still fix something.
+    private func addPreflightSection() {
+        guard let report = state.preflightReport, !report.issues.isEmpty else { return }
+
+        menu.addItem(statusLine(
+            report.isReady ? "Starts soon — \(report.warnings.count) warning(s)" : report.headline,
+            level: report.isReady ? .warning : .error
+        ))
+        for issue in report.issues.prefix(3) {
+            addWrapped(issue.remedy.map { "\(issue.message) — \($0)" } ?? issue.message, indent: 4)
+        }
+        menu.addItem(.separator())
     }
 
     private func addNextMeetingSection() {

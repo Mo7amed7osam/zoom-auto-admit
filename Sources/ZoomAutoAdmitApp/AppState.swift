@@ -66,6 +66,8 @@ final class AppState {
     private(set) var workflowStatus: String?
     private(set) var nextScheduleSummary: [String] = []
     private(set) var runOutcome: RunOutcome?
+    /// Most recent pre-flight result, shown in the menu until the class starts.
+    private(set) var preflightReport: PreflightReport?
     var monitoringEnabled: Bool
     var onChange: (() -> Void)?
 
@@ -94,16 +96,23 @@ final class AppState {
         notifyChange()
     }
 
+    func setPreflightReport(_ report: PreflightReport?) {
+        preflightReport = report
+        notifyChange()
+    }
+
     func setRunOutcome(_ outcome: RunOutcome?) {
         runOutcome = outcome
         notifyChange()
     }
 
+    /// A workflow starting supersedes whatever the pre-flight check said.
     /// Drops the short-lived success/failure banner but keeps a running workflow.
     func clearTransientRunState() {
         if case .running = runOutcome { return }
         runOutcome = nil
         workflowStatus = nil
+        preflightReport = nil
         notifyChange()
     }
 
