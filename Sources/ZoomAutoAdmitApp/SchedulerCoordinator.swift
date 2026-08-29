@@ -21,9 +21,11 @@ final class SchedulerCoordinator {
     /// Supplied by the app delegate so the coordinator drives the one shared monitor.
     private let startAutoAdmit: () -> Void
     private let stopAutoAdmit: () -> Void
-    /// Attendance is optional and isolated: if it fails, admissions continue.
-    var startAttendance: ((StudentGroup, ZoomSchedule) -> Void)?
-    var stopAttendance: ((_ finalize: Bool) -> Void)?
+    /// Required lifecycle hooks. Attendance remains failure-isolated at runtime,
+    /// but making the wiring non-optional prevents a scheduled workflow from
+    /// silently doing nothing because AppDelegate forgot to connect it.
+    private let startAttendance: (StudentGroup, ZoomSchedule) -> Void
+    private let stopAttendance: (_ finalize: Bool) -> Void
 
     private var scheduler: SchedulerService!
     private var configuration: SchedulerConfiguration
@@ -39,7 +41,9 @@ final class SchedulerCoordinator {
         schedulerLog: SchedulerLog = .shared,
         automation: ZoomAutomating = LiveZoomAutomation(),
         startAutoAdmit: @escaping () -> Void,
-        stopAutoAdmit: @escaping () -> Void
+        stopAutoAdmit: @escaping () -> Void,
+        startAttendance: @escaping (StudentGroup, ZoomSchedule) -> Void,
+        stopAttendance: @escaping (_ finalize: Bool) -> Void
     ) {
         self.state = state
         self.store = store
@@ -47,6 +51,8 @@ final class SchedulerCoordinator {
         self.automation = automation
         self.startAutoAdmit = startAutoAdmit
         self.stopAutoAdmit = stopAutoAdmit
+        self.startAttendance = startAttendance
+        self.stopAttendance = stopAttendance
         self.configuration = store.load()
 
         scheduler = SchedulerService(
@@ -180,6 +186,19 @@ final class SchedulerCoordinator {
             self.schedulerLog.write("Occurrence: \(occurrence)")
             self.schedulerLog.write("Required account profile: \(profile.name) <\(profile.accountIdentifier)>")
             self.schedulerLog.write("Meeting: \(schedule.meeting.displayText)")
+            let groupID = schedule.attendanceGroupID?.uuidString ?? "none"
+            if let group = self.configuration.group(for: schedule) {
+                self.schedulerLog.write(
+                    "[attendance] schedule=\(schedule.id.uuidString)/\(schedule.name) "
+                    + "attendanceGroupID=\(groupID) group=\(group.id.uuidString)/\(group.name) "
+                    + "roster=\(group.students.count)"
+                )
+            } else {
+                self.schedulerLog.write(
+                    "[attendance] schedule=\(schedule.id.uuidString)/\(schedule.name) "
+                    + "attendanceGroupID=\(groupID) group=unresolved roster=0"
+                )
+            }
 
             let runner = ZoomWorkflowRunner(
                 automation: self.automation,
@@ -215,12 +234,7 @@ final class SchedulerCoordinator {
         case .completed(let autoAdmitStarted):
             schedulerLog.write("Workflow completed for \(schedule.name); autoAdmit=\(autoAdmitStarted)")
             // Attendance recording begins only once the meeting is verified.
-            if let group = configuration.group(for: schedule) {
-                schedulerLog.write("Attendance: recording for group \(group.name)")
-                DispatchQueue.main.async { [startAttendance] in
-                    startAttendance?(group, schedule)
-                }
-            }
+            dispatchAttendanceStart(for: schedule)
 
             if autoAdmitStarted {
                 schedulerStartedMonitoring.insert(schedule.id)
@@ -256,6 +270,30 @@ final class SchedulerCoordinator {
         refreshNextScheduleSummary()
     }
 
+    /// Isolated so the schedule→group→lifecycle wiring has a direct regression
+    /// test. The callback is non-optional and is dispatched on the main thread,
+    /// where AppDelegate owns the AttendanceCoordinator.
+    func dispatchAttendanceStart(for schedule: ZoomSchedule) {
+        if let group = configuration.group(for: schedule) {
+            schedulerLog.write(
+                "[attendance] start-dispatch schedule=\(schedule.id.uuidString) "
+                + "group=\(group.id.uuidString)/\(group.name) roster=\(group.students.count)"
+            )
+            DispatchQueue.main.async { [startAttendance] in
+                startAttendance(group, schedule)
+            }
+        } else if let groupID = schedule.attendanceGroupID {
+            schedulerLog.write(
+                "[attendance] start-blocked schedule=\(schedule.id.uuidString) "
+                + "group=\(groupID.uuidString) reason=group-not-found"
+            )
+        } else {
+            schedulerLog.write(
+                "[attendance] start-skipped schedule=\(schedule.id.uuidString) reason=no-linked-group"
+            )
+        }
+    }
+
     private func handleMonitoringEnd(schedule: ZoomSchedule) {
         guard schedulerStartedMonitoring.remove(schedule.id) != nil else {
             schedulerLog.write("End time for \(schedule.name) ignored: monitoring was not started by the scheduler")
@@ -267,7 +305,7 @@ final class SchedulerCoordinator {
             stopAutoAdmit()
             // The register is closed at the configured end time, which is the
             // point at which "not seen yet" honestly becomes "absent".
-            stopAttendance?(true)
+            stopAttendance(true)
         }
         notify(title: "Auto Admit stopped", body: "End time reached for \(schedule.name)")
     }

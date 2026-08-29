@@ -50,12 +50,13 @@ final class SettingsWindowController: NSWindowController {
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 470),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 600),
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Zoom Auto Admit Settings"
+        window.minSize = NSSize(width: 520, height: 420)
         window.center()
         super.init(window: window)
         window.contentView = makeContentView()
@@ -123,6 +124,12 @@ final class SettingsWindowController: NSWindowController {
         autoAdmitDefaultButton.target = self
         autoAdmitDefaultButton.action = #selector(toggleDefaults)
 
+        aiKeyField.identifier = NSUserInterfaceItemIdentifier("openRouterAPIKey")
+        aiKeyField.toolTip = "Paste your OpenRouter API key. It will be stored in macOS Keychain."
+        aiKeyField.widthAnchor.constraint(equalToConstant: 440).isActive = true
+        aiModelField.identifier = NSUserInterfaceItemIdentifier("openRouterModel")
+        aiModelField.widthAnchor.constraint(equalToConstant: 440).isActive = true
+
         let openSettingsButton = NSButton(
             title: "Open System Settings",
             target: self,
@@ -155,9 +162,11 @@ final class SettingsWindowController: NSWindowController {
                 """)
             ]),
             section("AI attendance matching", views: [
+                NSTextField(labelWithString: "OpenRouter API key"),
                 aiKeyField,
                 aiKeyStatusLabel,
                 row([saveKeyButton, clearKeyButton]),
+                NSTextField(labelWithString: "OpenRouter model"),
                 aiModelField,
                 caption("""
                 Used only for student names local matching cannot settle. \
@@ -175,44 +184,44 @@ final class SettingsWindowController: NSWindowController {
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 20
+        stack.spacing = DesignKit.Metrics.sectionSpacing
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let container = NSView()
-        container.addSubview(stack)
+        // This settings form is intentionally taller than its window. Keeping it
+        // in a scrolling document view makes every section reachable on smaller
+        // displays and prevents the API-key controls from being clipped.
+        let document = FlippedView()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(stack)
+
+        let scrollView = NSScrollView()
+        scrollView.identifier = NSUserInterfaceItemIdentifier("settingsScrollView")
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.drawsBackground = false
+        scrollView.documentView = document
+
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 20)
+            document.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 20),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -20)
         ])
-        return container
+        return scrollView
     }
 
     private func section(_ title: String, views: [NSView]) -> NSView {
-        let heading = NSTextField(labelWithString: title)
-        heading.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
-        heading.textColor = .secondaryLabelColor
-
-        let stack = NSStackView(views: [heading] + views)
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        return stack
+        DesignKit.section(title, rows: views)
     }
 
     private func row(_ views: [NSView]) -> NSStackView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .horizontal
-        stack.spacing = 8
-        return stack
+        DesignKit.horizontal(views)
     }
 
     private func caption(_ text: String) -> NSTextField {
-        let field = NSTextField(wrappingLabelWithString: text)
-        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        field.textColor = .secondaryLabelColor
-        field.preferredMaxLayoutWidth = 440
-        return field
+        DesignKit.caption(text, width: 460)
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -280,4 +289,10 @@ final class SettingsWindowController: NSWindowController {
         alert.informativeText = detail
         alert.runModal()
     }
+}
+
+/// AppKit document views normally use a bottom-left origin. A flipped view keeps
+/// Settings anchored at the top when the window opens and while it is resized.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }

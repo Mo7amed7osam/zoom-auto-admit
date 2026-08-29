@@ -15,6 +15,8 @@ final class AttendanceWindowController: NSWindowController {
     private var selectedSession: AttendanceSession?
 
     private let sessionPopUp = NSPopUpButton()
+    /// Present / Needs Review / Absent, as a summary strip.
+    private let statStrip = NSStackView()
     private let summaryLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private let table = NSTableView()
@@ -93,13 +95,19 @@ final class AttendanceWindowController: NSWindowController {
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = DesignKit.Metrics.cardCornerRadius
+        scroll.layer?.borderWidth = 1
+        scroll.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.6).cgColor
+        scroll.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
 
         unmatchedLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         unmatchedLabel.textColor = .secondaryLabelColor
 
         finalizeButton.target = self
-        finalizeButton.action = #selector(finalize)
+        finalizeButton.action = #selector(finalizeAttendance)
         aiButton.target = self
         aiButton.action = #selector(matchWithAI)
         aiButton.toolTip = "Ask OpenRouter about the names local matching could not settle."
@@ -110,16 +118,26 @@ final class AttendanceWindowController: NSWindowController {
         actions.orientation = .horizontal
         actions.spacing = 10
 
-        let header = NSStackView(views: [sessionPopUp, summaryLabel, statusLabel])
+        statStrip.orientation = .horizontal
+        statStrip.spacing = 10
+
+        let header = NSStackView(views: [summaryLabel, statusLabel, sessionPopUp, statStrip])
         header.orientation = .vertical
         header.alignment = .leading
-        header.spacing = 6
+        header.spacing = 10
+        header.setCustomSpacing(2, after: summaryLabel)
+        header.setCustomSpacing(14, after: statusLabel)
 
         let root = NSStackView(views: [header, scroll, unmatchedLabel, actions])
         root.orientation = .vertical
         root.alignment = .leading
-        root.spacing = 12
-        root.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        root.spacing = 16
+        root.edgeInsets = NSEdgeInsets(
+            top: DesignKit.Metrics.windowMargin,
+            left: DesignKit.Metrics.windowMargin,
+            bottom: DesignKit.Metrics.windowMargin,
+            right: DesignKit.Metrics.windowMargin
+        )
         root.translatesAutoresizingMaskIntoConstraints = false
 
         let container = NSView()
@@ -192,8 +210,27 @@ final class AttendanceWindowController: NSWindowController {
             "Needs Review: \(session.needsReviewCount)"
         ]
         parts.append(session.isFinalized ? "Absent: \(session.absentCount)" : "Not seen yet: \(notSeen)")
-        statusLabel.stringValue = parts.joined(separator: "   ·   ")
-            + (session.isFinalized ? "   ·   Finalized" : "   ·   In progress")
+        statusLabel.stringValue = session.isFinalized
+            ? "Finalized · \(session.rosterSnapshot.count) students"
+            : "In progress · \(session.rosterSnapshot.count) students"
+
+        statStrip.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        statStrip.addArrangedSubview(DesignKit.statTile(
+            value: String(session.presentCount),
+            caption: "Present",
+            tint: .systemGreen
+        ))
+        statStrip.addArrangedSubview(DesignKit.statTile(
+            value: String(session.needsReviewCount),
+            caption: "Needs Review",
+            tint: .systemOrange
+        ))
+        statStrip.addArrangedSubview(DesignKit.statTile(
+            value: String(session.isFinalized ? session.absentCount : notSeen),
+            caption: session.isFinalized ? "Absent" : "Not Seen Yet",
+            tint: session.isFinalized ? .systemRed : .secondaryLabelColor
+        ))
+        _ = parts
 
         var footer: [String] = []
         if !session.unmatchedZoomNames.isEmpty {
@@ -293,7 +330,11 @@ final class AttendanceWindowController: NSWindowController {
                         autoAcceptConfidence: threshold
                     )
                     self.update(summary.session)
-                    var detail = "\(summary.appliedCount) matched, \(summary.reviewCount) need review."
+                    var detail = """
+                    \(summary.appliedCount) matched
+                    \(summary.reviewCount) need review
+                    \(summary.unmatchedObservedNameCount) Zoom name(s) unmatched
+                    """
                     if !summary.rejected.isEmpty {
                         detail += "\n\(summary.rejected.count) proposal(s) were rejected as unusable."
                     }

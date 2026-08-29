@@ -1,7 +1,8 @@
 import Foundation
 import OSLog
 
-/// Talks to OpenRouter for the handful of names local matching could not settle.
+/// Talks to OpenRouter for the complete unresolved matching problem after local
+/// deterministic matches have been removed.
 ///
 /// Failure here is always survivable: attendance recording and Auto Admit carry
 /// on regardless, and unresolved names simply stay Needs Review.
@@ -39,47 +40,61 @@ public final class OpenRouterClient {
         self.apiKeyProvider = apiKeyProvider
     }
 
-    /// The instruction the model gets. Deliberately narrow: it may only pair
-    /// names that were given to it, and must say so when it cannot.
+    /// The model receives every unresolved student and every still-unclaimed
+    /// observation together. No local similarity score filters candidate pairs.
     public static func prompt(for request: AIMatchRequest) -> String {
         let students = request.students
             .map { "  {\"id\": \"\($0.id)\", \"name\": \"\(escape($0.officialName))\"}" }
             .joined(separator: ",\n")
-        let names = request.zoomNames
-            .map { "  \"\(escape($0))\"" }
+        let names = request.observedNames
+            .map { "  {\"id\": \"\($0.id)\", \"name\": \"\(escape($0.displayName))\"}" }
             .joined(separator: ",\n")
 
         return """
         You match official student names to the display names people used in a Zoom meeting.
 
+        Compare the complete student list and complete observed-name list globally before assigning anything.
+
+        Names may contain Arabic instead of English, English instead of Arabic, Arabic/English \
+        transliteration, spelling variations, only a first name, first name plus surname, missing \
+        middle names, reordered names, nicknames, abbreviations, capitalization differences, or \
+        extra Zoom/device text. Titles may include Dr, Prof, Eng, Mr, Mrs, Ms, د, دكتور, دكتورة, \
+        م, or مهندس. For example, رفيق may correspond to Rafeek/Rafiq/Rafik; محمد to \
+        Mohamed/Mohammad/Muhammad; أيمن to Ayman/Aiman; and وفاء to Wafaa/Wafa.
+
         Rules:
-        - Only pair a student with a Zoom name from the list given. Never invent either.
-        - Each student may appear at most once. Each Zoom name may appear at most once.
-        - A shared first name alone is weak evidence. A device name such as "Ahmed's iPhone" \
-        is weak evidence unless nothing else fits.
-        - Names may be written in Arabic or transliterated English; treat them as the same language family.
-        - If you are unsure, leave the Zoom name unresolved rather than guessing.
+        - Only use the opaque student and observed-name IDs given below. Never invent an ID or identity.
+        - Each student may appear at most once. Each observed name may appear at most once.
+        - Consider competing candidates before assigning. A shared first name with multiple plausible \
+        students is ambiguous and must be marked needs_review or left unmatched, never chosen randomly.
+        - Set needs_review to true for a plausible but uncertain pairing.
+        - If there is no plausible pairing, leave the student and observed name unmatched.
 
         Students:
         [
         \(students)
         ]
 
-        Zoom names:
+        Observed Zoom names:
         [
         \(names)
         ]
 
         Reply with JSON only, in exactly this shape:
-        {"matches":[{"studentId":"...","zoomName":"...","confidence":0.0,"reason":"..."}],\
-        "unresolvedZoomNames":["..."]}
+        {"matches":[{"student_id":"s0","observed_name_id":"z0","confidence":0.95,\
+        "needs_review":false,"reason":"..."}],"unmatched_student_ids":["s1"],\
+        "unmatched_observed_name_ids":["z1"]}
         """
     }
 
     /// Sends the request. Never logs the key or the Authorization header.
     public func proposeMatches(for request: AIMatchRequest) async -> Swift.Result<AIMatchResponse, AIMatchError> {
         guard request.isWorthSending else {
-            return .success(AIMatchResponse(matches: [], unresolvedZoomNames: request.zoomNames))
+            return .success(AIMatchResponse(
+                matches: [],
+                unmatchedStudentIDs: request.students.map(\.id),
+                unmatchedObservedNameIDs: request.observedNames.map(\.id)
+            ))
         }
         guard let apiKey = apiKeyProvider(), !apiKey.isEmpty else {
             return .failure(.noAPIKey)
@@ -110,7 +125,7 @@ public final class OpenRouterClient {
 
         for attempt in 1...configuration.maxAttempts {
             // Only counts and the model name are logged; never names, never the key.
-            logger.info("AI matching attempt \(attempt) students=\(request.students.count) names=\(request.zoomNames.count)")
+            logger.info("AI matching attempt \(attempt) students=\(request.students.count) names=\(request.observedNames.count)")
             do {
                 let (data, response) = try await session.data(for: urlRequest)
                 guard let http = response as? HTTPURLResponse else {

@@ -53,8 +53,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         schedulerCoordinator = SchedulerCoordinator(
             state: state,
             startAutoAdmit: { [weak self] in self?.setMonitoring(true) },
-            stopAutoAdmit: { [weak self] in self?.setMonitoring(false) }
+            stopAutoAdmit: { [weak self] in self?.setMonitoring(false) },
+            startAttendance: { [weak self] group, schedule in
+                self?.attendanceCoordinator.start(group: group, schedule: schedule)
+            },
+            stopAttendance: { [weak self] finalize in
+                guard let self else { return }
+                if finalize {
+                    _ = self.attendanceCoordinator.finalize()
+                } else {
+                    self.attendanceCoordinator.stop()
+                }
+            }
         )
+        SchedulerLog.shared.write("[attendance] lifecycle-wired=true")
         menuBarController.schedulerConfiguration = { [weak self] in
             self?.schedulerCoordinator.currentConfiguration ?? SchedulerConfiguration()
         }

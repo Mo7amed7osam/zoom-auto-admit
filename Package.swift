@@ -17,6 +17,10 @@ let package = Package(
         .executableTarget(name: "InspectZoom", dependencies: ["ZoomAXSupport"]),
         .executableTarget(name: "AutoAdmit", dependencies: ["ZoomAXSupport"]),
         .testTarget(name: "ZoomAXSupportTests", dependencies: ["ZoomAXSupport"]),
-        .testTarget(name: "ZoomAutoAdmitCoreTests", dependencies: ["ZoomAutoAdmitCore"])
+        .testTarget(name: "ZoomAutoAdmitCoreTests", dependencies: ["ZoomAutoAdmitCore"]),
+        .testTarget(
+            name: "ZoomAutoAdmitAppTests",
+            dependencies: ["ZoomAutoAdmitApp", "ZoomAutoAdmitCore"]
+        )
     ]
 )

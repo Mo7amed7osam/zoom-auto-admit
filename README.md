@@ -54,6 +54,22 @@ Inspect Zoom's live hierarchy while its Participants panel is open:
 ./run-inspect.sh
 ```
 
+## Attendance snapshots
+
+A schedule records attendance only when its **Attendance** setting links a saved student group. Once the scheduled workflow verifies the meeting, the app creates and persists one `AttendanceSession`, takes a `meeting_started` snapshot within a few seconds, checks for a periodic snapshot every five seconds without continuously scanning Zoom, coalesces Auto Admit bursts into one `post_admit` snapshot, and supports **Attendance → Take Snapshot Now**.
+
+Attendance is evidence-only: only Zoom rows exposed as `ZMHCTableItemType_PANELIST` are eligible, Host/me/co-host rows and group ignore names are excluded, and `WAITINGLIST` rows never count. Successful snapshots accumulate as a union; an unreadable snapshot removes nobody and does not stop Auto Admit or the scheduler.
+
+The schedule and attendance pipeline writes compact diagnostics to:
+
+```sh
+tail -f "$HOME/Library/Logs/Zoom Auto Admit/scheduler.log"
+```
+
+Relevant lines begin with `[attendance]` and report schedule/group linkage, session creation, snapshot reason, Zoom PID and AX window count, raw PANELIST rows, filtered names, persistence, reconciliation, and the next due snapshot. No OpenRouter key or credential is logged.
+
+For a live isolation test, start a linked scheduled meeting and choose **Attendance → Take Snapshot Now**. Then verify `parser available=true`, a `snapshot-captured` line, and `session-saved=true`. Persisted sessions are under `~/Library/Application Support/Zoom Auto Admit/Attendance/` and appear in **Attendance → Review Attendance…**.
+
 ## Native menu bar app
 
 The primary build is a native macOS menu-bar application. It has no normal window, uses an SF Symbol status icon, and runs with AppKit's accessory activation policy plus `LSUIElement=true`, so it does not appear in the Dock during normal use.

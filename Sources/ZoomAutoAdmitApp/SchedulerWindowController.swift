@@ -104,7 +104,7 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         self.configuration = coordinator.currentConfiguration
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 820, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 940, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -112,8 +112,10 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         window.title = "Zoom Auto Admit"
         window.center()
         window.setFrameAutosaveName("SchedulerWindow")
-        window.minSize = NSSize(width: 820, height: 600)
-        window.titlebarAppearsTransparent = false
+        window.minSize = NSSize(width: 880, height: 640)
+        // A large title reads as an app rather than a preferences sheet.
+        window.titleVisibility = .visible
+        window.toolbarStyle = .unified
         super.init(window: window)
         window.delegate = self
         window.contentView = makeContentView()
@@ -291,7 +293,7 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         ])
         form.orientation = .vertical
         form.alignment = .leading
-        form.spacing = 18
+        form.spacing = DesignKit.Metrics.sectionSpacing
 
         let formScroll = NSScrollView()
         formScroll.hasVerticalScroller = true
@@ -415,7 +417,7 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         ])
         form.orientation = .vertical
         form.alignment = .leading
-        form.spacing = 18
+        form.spacing = DesignKit.Metrics.sectionSpacing
 
         profileSaveButton.target = self
         profileSaveButton.action = #selector(save)
@@ -528,7 +530,7 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         ])
         form.orientation = .vertical
         form.alignment = .leading
-        form.spacing = 18
+        form.spacing = DesignKit.Metrics.sectionSpacing
 
         let saveRow = NSStackView(views: [NSView(), NSButton(title: "Save", target: self, action: #selector(save))])
         saveRow.orientation = .horizontal
@@ -1219,23 +1221,11 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
     // MARK: Small builders
 
     private static func errorLabel() -> NSTextField {
-        let field = NSTextField(labelWithString: "")
-        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        field.textColor = .systemRed
-        field.isHidden = true
-        return field
+        DesignKit.errorLabel()
     }
 
     private func section(_ title: String, rows: [NSView]) -> NSView {
-        let heading = NSTextField(labelWithString: title.uppercased())
-        heading.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
-        heading.textColor = .secondaryLabelColor
-
-        let stack = NSStackView(views: [heading] + rows)
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        return stack
+        DesignKit.section(title, rows: rows)
     }
 
     private func labelled(
@@ -1244,50 +1234,25 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         suffix: String? = nil,
         error: NSTextField? = nil
     ) -> NSView {
-        let label = NSTextField(labelWithString: title)
-        label.alignment = .right
-        label.textColor = .labelColor
-        label.widthAnchor.constraint(equalToConstant: 130).isActive = true
-
-        var rowViews: [NSView] = [label, control]
-        if let suffix {
-            let suffixLabel = NSTextField(labelWithString: suffix)
-            suffixLabel.textColor = .secondaryLabelColor
-            rowViews.append(suffixLabel)
+        // An empty title means the control spans the row, indented to the same
+        // axis as every other control.
+        guard !title.isEmpty else {
+            guard let error else { return DesignKit.fullWidthRow(control) }
+            let stack = NSStackView(views: [DesignKit.fullWidthRow(control), DesignKit.fullWidthRow(error)])
+            stack.orientation = .vertical
+            stack.alignment = .leading
+            stack.spacing = 4
+            return stack
         }
-        let row = NSStackView(views: rowViews)
-        row.orientation = .horizontal
-        row.alignment = .firstBaseline
-        row.spacing = 10
-
-        guard let error else { return row }
-
-        let spacer = NSView()
-        spacer.widthAnchor.constraint(equalToConstant: 140).isActive = true
-        let errorRow = NSStackView(views: [spacer, error])
-        errorRow.orientation = .horizontal
-        errorRow.spacing = 0
-
-        let stack = NSStackView(views: [row, errorRow])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 2
-        return stack
+        return DesignKit.row(title, control, suffix: suffix, error: error)
     }
 
     private func horizontal(_ views: [NSView]) -> NSStackView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .horizontal
-        stack.spacing = 8
-        return stack
+        DesignKit.horizontal(views)
     }
 
     private func caption(_ text: String) -> NSTextField {
-        let field = NSTextField(wrappingLabelWithString: text)
-        field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        field.textColor = .secondaryLabelColor
-        field.preferredMaxLayoutWidth = 420
-        return field
+        DesignKit.caption(text)
     }
 
     private func buildEmptyState(

@@ -19,6 +19,25 @@ import Foundation
 /// identity has to come from the displayed name — which is exactly why the
 /// attendance layer above this treats names as evidence rather than as identity.
 public extension ZoomAXSupport {
+    struct ParticipantsReadoutDiagnostics {
+        public let readout: ParticipantsReadout
+        public let windowsCount: Int
+        public let windowsError: AXError
+        public let scannedWindowTitles: [String]
+
+        public init(
+            readout: ParticipantsReadout,
+            windowsCount: Int,
+            windowsError: AXError,
+            scannedWindowTitles: [String]
+        ) {
+            self.readout = readout
+            self.windowsCount = windowsCount
+            self.windowsError = windowsError
+            self.scannedWindowTitles = scannedWindowTitles
+        }
+    }
+
     enum ParticipantRole: String, Equatable, CaseIterable {
         case host
         case coHost
@@ -252,20 +271,49 @@ public extension ZoomAXSupport {
     /// the panel cannot be read, so the recorder can tell "cannot see" from
     /// "nobody there".
     static func participantsReadout(pid: pid_t) -> ParticipantsReadout {
+        participantsReadoutDiagnostics(pid: pid).readout
+    }
+
+    /// The production read plus enough AX evidence to isolate live failures.
+    /// Like `participantsReadout`, every invocation creates fresh PID-addressed
+    /// AX references; no window or row element survives between snapshots.
+    static func participantsReadoutDiagnostics(pid: pid_t) -> ParticipantsReadoutDiagnostics {
         let application = freshZoomApplicationElement(pid: pid, messagingTimeout: 5)
         let windows = windowsResult(of: application)
-        guard windows.error == .success else { return .unavailable }
+        guard windows.error == .success else {
+            return ParticipantsReadoutDiagnostics(
+                readout: .unavailable,
+                windowsCount: 0,
+                windowsError: windows.error,
+                scannedWindowTitles: []
+            )
+        }
+
+        var titles: [String] = []
 
         for window in windows.windows {
             let title = windowTitle(window)
+            titles.append(title)
             guard normalized(title) != "zoom workplace" else { continue }
 
             // The participants outline sits a few levels below the window, well
             // inside a depth that stays cheap to walk.
             let snapshot = snapshot(from: buildTree(from: window, maxDepth: 12, maxChildren: 400, maxNodes: 20_000))
             let readout = participantsReadout(inWindow: snapshot)
-            if readout.listAvailable { return readout }
+            if readout.listAvailable {
+                return ParticipantsReadoutDiagnostics(
+                    readout: readout,
+                    windowsCount: windows.windows.count,
+                    windowsError: .success,
+                    scannedWindowTitles: titles
+                )
+            }
         }
-        return .unavailable
+        return ParticipantsReadoutDiagnostics(
+            readout: .unavailable,
+            windowsCount: windows.windows.count,
+            windowsError: .success,
+            scannedWindowTitles: titles
+        )
     }
 }

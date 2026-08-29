@@ -11,6 +11,7 @@ public enum AIReconciliation {
         public let session: AttendanceSession
         public let appliedCount: Int
         public let reviewCount: Int
+        public let unmatchedObservedNameCount: Int
         public let rejected: [String]
         public let failure: AIMatchError?
 
@@ -21,51 +22,66 @@ public enum AIReconciliation {
     ///
     /// Only students with no decision yet and Zoom names nobody claimed are
     /// included; anything already resolved stays local and costs nothing.
-    public static func request(for session: AttendanceSession) -> (request: AIMatchRequest, ids: [String: UUID]) {
-        let unresolvedStatuses: Set<AttendanceStatus> = [.notSeenYet, .absent, .needsReview]
-        let unresolved = session.records
-            .filter { !$0.isManual && unresolvedStatuses.contains($0.status) }
-            .compactMap { record in session.rosterSnapshot.first { $0.id == record.studentID } }
+    public static func request(for session: AttendanceSession) -> (request: AIMatchRequest, ids: AIMatchRequestIDs) {
+        // Derive unresolved students from the session roster itself, not from
+        // fuzzy candidate generation. This also behaves correctly for a session
+        // whose records have not yet been reconciled.
+        let resolvedStudentIDs = Set(
+            session.records
+                .filter { $0.isManual || $0.status == .present }
+                .map(\.studentID)
+        )
+        let unresolved = session.rosterSnapshot.filter { !resolvedStudentIDs.contains($0.id) }
 
         let claimed = Set(
             session.records
-                .filter { $0.status == .present }
+                .filter { $0.isManual || $0.status == .present }
                 .compactMap(\.matchedObservationID)
         )
-        let freeNames = session.observations
-            .filter { !claimed.contains($0.id) }
-            .map(\.rawName)
+        let freeObservations = session.observations.filter { !claimed.contains($0.id) }
 
-        var ids: [String: UUID] = [:]
+        var studentIDs: [String: UUID] = [:]
         var candidates: [AIMatchRequest.Candidate] = []
         for (index, student) in unresolved.enumerated() {
             // Opaque per-request ids: the model never receives a real UUID and
             // cannot reference anything outside this request.
             let key = "s\(index)"
-            ids[key] = student.id
+            studentIDs[key] = student.id
             candidates.append(.init(id: key, officialName: student.officialName))
         }
 
-        return (AIMatchRequest(students: candidates, zoomNames: freeNames), ids)
+        var observationIDs: [String: UUID] = [:]
+        var observedNames: [AIMatchRequest.ObservedName] = []
+        for (index, observation) in freeObservations.enumerated() {
+            let key = "z\(index)"
+            observationIDs[key] = observation.id
+            observedNames.append(.init(id: key, displayName: observation.rawName))
+        }
+
+        return (
+            AIMatchRequest(students: candidates, observedNames: observedNames),
+            AIMatchRequestIDs(students: studentIDs, observations: observationIDs)
+        )
     }
 
     /// Folds validated proposals into the session.
     public static func apply(
         _ response: AIMatchResponse,
         to session: AttendanceSession,
-        ids: [String: UUID],
+        ids: AIMatchRequestIDs,
         autoAcceptConfidence: Double
     ) -> Summary {
         let validated = AIMatchValidator.validate(
             response,
             students: session.rosterSnapshot,
             observations: session.observations,
-            studentIDs: ids
+            requestIDs: ids
         )
 
         var updated = session
         var applied = 0
         var review = 0
+        var pairedObservations = Set<UUID>()
 
         for match in validated.matches {
             guard let index = updated.records.firstIndex(where: { $0.studentID == match.studentID }) else {
@@ -77,13 +93,14 @@ public enum AIReconciliation {
             guard updated.records[index].status != .present
                 || updated.records[index].matchSource == .ai else { continue }
 
-            let confident = match.confidence >= autoAcceptConfidence
+            let confident = !match.needsReview && match.confidence >= autoAcceptConfidence
             updated.records[index].status = confident ? .present : .needsReview
             updated.records[index].matchedObservationID = match.observationID
             updated.records[index].matchedZoomName = match.zoomName
             updated.records[index].matchSource = .ai
             updated.records[index].confidence = match.confidence
             updated.records[index].reason = match.reason
+            pairedObservations.insert(match.observationID)
 
             if confident { applied += 1 } else { review += 1 }
         }
@@ -101,6 +118,9 @@ public enum AIReconciliation {
             session: updated,
             appliedCount: applied,
             reviewCount: review,
+            unmatchedObservedNameCount: Set(ids.observations.values)
+                .subtracting(pairedObservations)
+                .count,
             rejected: validated.rejected,
             failure: nil
         )
@@ -108,6 +128,13 @@ public enum AIReconciliation {
 
     /// Result when AI could not be reached: local results stand untouched.
     public static func unavailable(_ error: AIMatchError, session: AttendanceSession) -> Summary {
-        Summary(session: session, appliedCount: 0, reviewCount: 0, rejected: [], failure: error)
+        Summary(
+            session: session,
+            appliedCount: 0,
+            reviewCount: 0,
+            unmatchedObservedNameCount: session.unmatchedZoomNames.count,
+            rejected: [],
+            failure: error
+        )
     }
 }
