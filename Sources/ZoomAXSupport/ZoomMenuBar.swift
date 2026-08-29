@@ -162,6 +162,38 @@ public extension ZoomAXSupport {
         }
     }
 
+    /// Zoom's menu item for showing the participants panel.
+    ///
+    /// Preferred over the in-meeting toolbar button: the toolbar auto-hides,
+    /// while an application menu is always present, and menu items remain
+    /// reachable even when the meeting window itself has been moved to another
+    /// Space and has dropped out of `AXWindows`.
+    static let showParticipantsMenuIdentifier = "onManageParticipants:"
+
+    /// Finds a menu item anywhere in the menu bar by its AppKit action
+    /// identifier, which is far more stable than a localised title.
+    static func menuItem(
+        withIdentifier identifier: String,
+        inMenuBar menuBar: SnapshotNode
+    ) -> (node: SnapshotNode, indexPath: [Int])? {
+        var found: (SnapshotNode, [Int])?
+
+        func walk(_ node: SnapshotNode, indexPath: [Int]) {
+            if found != nil { return }
+            if node.role == "AXMenuItem",
+               node.identifier == identifier,
+               node.actions.contains(pressAction) {
+                found = (node, indexPath)
+                return
+            }
+            for (index, child) in node.children.enumerated() {
+                walk(child, indexPath: indexPath + [index])
+            }
+        }
+        walk(menuBar, indexPath: [])
+        return found.map { (node: $0.0, indexPath: $0.1) }
+    }
+
     /// The `Start meeting` / `Join meeting...` style entries of the Zoom
     /// application menu, located structurally rather than by index.
     static func applicationMenuItem(

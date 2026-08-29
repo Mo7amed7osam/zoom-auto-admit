@@ -132,17 +132,38 @@ public extension ZoomAXSupport {
 
         var admitted: [ParticipantRow] = []
         var waiting: [ParticipantRow] = []
-        var seenPaths = Set<[Int]>()
+        // Dedupe on what the row *is*, not where it sits.
+        //
+        // Zoom republishes whole subtrees at different depths — the in-meeting
+        // toolbar does it heavily — so two occurrences of one person carry two
+        // different index paths. Keying on the path would happily record the
+        // same student twice; keying on the row's identity collapses them, and
+        // the shallowest occurrence is kept as the canonical one.
+        var admittedKeys: [String: Int] = [:]
+        var waitingKeys: [String: Int] = [:]
+
+        func add(_ row: ParticipantRow, to rows: inout [ParticipantRow], keys: inout [String: Int]) {
+            let key = normalized(row.rawText)
+            guard !key.isEmpty else { return }
+            guard let existing = keys[key] else {
+                keys[key] = rows.count
+                rows.append(row)
+                return
+            }
+            if row.indexPath.count < rows[existing].indexPath.count {
+                rows[existing] = row
+            }
+        }
 
         func walk(_ node: SnapshotNode, indexPath: [Int]) {
             if node.role == "AXCell", let identifier = node.identifier {
                 if identifier == panelistIdentifier {
-                    if let row = row(from: node, indexPath: indexPath), seenPaths.insert(indexPath).inserted {
-                        admitted.append(row)
+                    if let row = row(from: node, indexPath: indexPath) {
+                        add(row, to: &admitted, keys: &admittedKeys)
                     }
                 } else if identifier == waitingListIdentifier {
-                    if let row = row(from: node, indexPath: indexPath), seenPaths.insert(indexPath).inserted {
-                        waiting.append(row)
+                    if let row = row(from: node, indexPath: indexPath) {
+                        add(row, to: &waiting, keys: &waitingKeys)
                     }
                 }
                 // A cell's own subtree holds its controls, not further rows.

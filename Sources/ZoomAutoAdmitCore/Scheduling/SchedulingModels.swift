@@ -297,6 +297,11 @@ public struct ZoomSchedule: Codable, Equatable, Identifiable, Hashable {
     public var accountProfileID: UUID
     public var meeting: MeetingReference
     public var enablesAutoAdmit: Bool
+    /// The class group whose attendance this meeting records.
+    ///
+    /// Optional because attendance is additive: a schedule without a group runs
+    /// exactly as before and simply records nothing.
+    public var attendanceGroupID: UUID?
     /// Mute the microphone in Zoom's pre-join preview before starting.
     /// The workflow still reads Zoom's real state and only presses when the
     /// microphone is actually live.
@@ -317,6 +322,7 @@ public struct ZoomSchedule: Codable, Equatable, Identifiable, Hashable {
         accountProfileID: UUID,
         meeting: MeetingReference,
         enablesAutoAdmit: Bool = true,
+        attendanceGroupID: UUID? = nil,
         mutesMicrophoneBeforeJoining: Bool = true,
         disablesCameraBeforeJoining: Bool = true,
         launchZoomMinutesEarly: Int = 2
@@ -330,6 +336,7 @@ public struct ZoomSchedule: Codable, Equatable, Identifiable, Hashable {
         self.accountProfileID = accountProfileID
         self.meeting = meeting
         self.enablesAutoAdmit = enablesAutoAdmit
+        self.attendanceGroupID = attendanceGroupID
         self.mutesMicrophoneBeforeJoining = mutesMicrophoneBeforeJoining
         self.disablesCameraBeforeJoining = disablesCameraBeforeJoining
         self.launchZoomMinutesEarly = min(max(launchZoomMinutesEarly, 0), 60)
@@ -339,7 +346,7 @@ public struct ZoomSchedule: Codable, Equatable, Identifiable, Hashable {
     // existed keep loading, defaulting to the safe choice: both devices off.
     private enum CodingKeys: String, CodingKey {
         case id, name, isEnabled, recurrence, startTime, endTime, accountProfileID
-        case meeting, enablesAutoAdmit, mutesMicrophoneBeforeJoining
+        case meeting, enablesAutoAdmit, attendanceGroupID, mutesMicrophoneBeforeJoining
         case disablesCameraBeforeJoining, launchZoomMinutesEarly
     }
 
@@ -354,6 +361,7 @@ public struct ZoomSchedule: Codable, Equatable, Identifiable, Hashable {
         accountProfileID = try container.decode(UUID.self, forKey: .accountProfileID)
         meeting = try container.decode(MeetingReference.self, forKey: .meeting)
         enablesAutoAdmit = try container.decodeIfPresent(Bool.self, forKey: .enablesAutoAdmit) ?? true
+        attendanceGroupID = try container.decodeIfPresent(UUID.self, forKey: .attendanceGroupID)
         mutesMicrophoneBeforeJoining =
             try container.decodeIfPresent(Bool.self, forKey: .mutesMicrophoneBeforeJoining) ?? true
         disablesCameraBeforeJoining =
@@ -367,10 +375,35 @@ public struct ZoomSchedule: Codable, Equatable, Identifiable, Hashable {
 public struct SchedulerConfiguration: Codable, Equatable {
     public var accountProfiles: [ZoomAccountProfile]
     public var schedules: [ZoomSchedule]
+    /// Class groups and their rosters. Kept beside the schedules so a single
+    /// file still describes everything the scheduler needs.
+    public var studentGroups: [StudentGroup]
 
-    public init(accountProfiles: [ZoomAccountProfile] = [], schedules: [ZoomSchedule] = []) {
+    public init(
+        accountProfiles: [ZoomAccountProfile] = [],
+        schedules: [ZoomSchedule] = [],
+        studentGroups: [StudentGroup] = []
+    ) {
         self.accountProfiles = accountProfiles
         self.schedules = schedules
+        self.studentGroups = studentGroups
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case accountProfiles, schedules, studentGroups
+    }
+
+    // Files written before groups existed must keep loading.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accountProfiles = try container.decodeIfPresent([ZoomAccountProfile].self, forKey: .accountProfiles) ?? []
+        schedules = try container.decodeIfPresent([ZoomSchedule].self, forKey: .schedules) ?? []
+        studentGroups = try container.decodeIfPresent([StudentGroup].self, forKey: .studentGroups) ?? []
+    }
+
+    public func group(for schedule: ZoomSchedule) -> StudentGroup? {
+        guard let id = schedule.attendanceGroupID else { return nil }
+        return studentGroups.first { $0.id == id }
     }
 
     public func profile(for schedule: ZoomSchedule) -> ZoomAccountProfile? {

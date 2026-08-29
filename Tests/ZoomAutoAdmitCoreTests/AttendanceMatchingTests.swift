@@ -70,8 +70,7 @@ final class DeterministicMatcherTests: XCTestCase {
         ParticipantObservation(
             rawName: name,
             normalizedName: NameNormalizer.normalize(name),
-            firstSeen: Date(timeIntervalSince1970: 0),
-            lastSeen: Date(timeIntervalSince1970: 60)
+            observedAt: [Date(timeIntervalSince1970: 0), Date(timeIntervalSince1970: 60)]
         )
     }
 
@@ -192,119 +191,5 @@ final class DeterministicMatcherTests: XCTestCase {
         let outcome = match([present, absent], [observation("Mohamed Ahmed Hassan")])
 
         XCTAssertEqual(outcome.unmatchedStudentIDs, [absent.id])
-    }
-}
-
-final class ParticipantRecorderTests: XCTestCase {
-    private let start = Date(timeIntervalSince1970: 1_800_000_000)
-
-    private func group(ignoring ignored: [String] = []) -> StudentGroup {
-        StudentGroup(name: "Group A", students: [], ignoredParticipantNames: ignored)
-    }
-
-    private func row(_ name: String, roles: Set<ZoomAXSupport.ParticipantRole> = []) -> ZoomAXSupport.ParticipantRow {
-        ZoomAXSupport.ParticipantRow(
-            rawText: name,
-            displayName: name,
-            roles: roles,
-            indexPath: [0]
-        )
-    }
-
-    private func readout(
-        _ rows: [ZoomAXSupport.ParticipantRow],
-        waiting: [ZoomAXSupport.ParticipantRow] = []
-    ) -> ZoomAXSupport.ParticipantsReadout {
-        ZoomAXSupport.ParticipantsReadout(
-            listAvailable: true,
-            admitted: rows,
-            waiting: waiting,
-            reportedCount: rows.count
-        )
-    }
-
-    func testParticipantsAreRecordedWithTimestamps() {
-        let recorder = ParticipantRecorder(group: group())
-        recorder.record(readout([row("Mohamed Ahmed")]), at: start)
-        recorder.record(readout([row("Mohamed Ahmed")]), at: start.addingTimeInterval(60))
-
-        XCTAssertEqual(recorder.observations.count, 1)
-        let observation = recorder.observations[0]
-        XCTAssertEqual(observation.rawName, "Mohamed Ahmed")
-        XCTAssertEqual(observation.firstSeen, start)
-        XCTAssertEqual(observation.lastSeen, start.addingTimeInterval(60))
-        XCTAssertTrue(observation.currentlyPresent)
-        XCTAssertEqual(observation.joinCount, 1)
-    }
-
-    /// The teacher is not on their own register.
-    func testHostIsNotRecordedAsAStudent() {
-        let recorder = ParticipantRecorder(group: group())
-        recorder.record(readout([
-            row("eyouth coordinator", roles: [.host, .me]),
-            row("Mohamed Ahmed", roles: [.guest])
-        ]), at: start)
-
-        XCTAssertEqual(recorder.observations.map(\.rawName), ["Mohamed Ahmed"])
-    }
-
-    func testIgnoredNamesAreNotRecorded() {
-        let recorder = ParticipantRecorder(group: group(ignoring: ["Training Coordinator"]))
-        recorder.record(readout([row("training coordinator"), row("Sara Ali")]), at: start)
-
-        XCTAssertEqual(recorder.observations.map(\.rawName), ["Sara Ali"])
-    }
-
-    /// Waiting Room entries are not attendance until admitted.
-    func testWaitingRoomEntriesAreNotAttendance() {
-        let recorder = ParticipantRecorder(group: group())
-        recorder.record(readout([], waiting: [row("Ahmed Tarek")]), at: start)
-
-        XCTAssertTrue(recorder.observations.isEmpty)
-    }
-
-    /// Leaving and rejoining is one student with two intervals.
-    func testRejoiningDoesNotCreateASecondAttendee() {
-        let recorder = ParticipantRecorder(group: group())
-        recorder.record(readout([row("Mohamed Ahmed")]), at: start)
-        recorder.record(readout([]), at: start.addingTimeInterval(120))
-        recorder.record(readout([row("Mohamed Ahmed")]), at: start.addingTimeInterval(300))
-        recorder.finish(at: start.addingTimeInterval(600))
-
-        XCTAssertEqual(recorder.observations.count, 1)
-        XCTAssertEqual(recorder.observations[0].joinCount, 2)
-        XCTAssertFalse(recorder.observations[0].currentlyPresent)
-    }
-
-    /// The failure that would mark a whole class absent: a list that cannot be
-    /// read is not a list with nobody in it.
-    func testUnavailableListDoesNotMarkEveryoneGone() {
-        let recorder = ParticipantRecorder(group: group())
-        recorder.record(readout([row("Mohamed Ahmed")]), at: start)
-        recorder.record(.unavailable, at: start.addingTimeInterval(60))
-
-        XCTAssertEqual(recorder.observations.count, 1)
-        XCTAssertTrue(recorder.observations[0].currentlyPresent, "an unreadable list says nothing")
-        XCTAssertEqual(recorder.unavailableReads, 1)
-        XCTAssertEqual(recorder.successfulReads, 1)
-    }
-
-    func testLateJoinerIsRecorded() {
-        let recorder = ParticipantRecorder(group: group())
-        recorder.record(readout([row("Mohamed Ahmed")]), at: start)
-        recorder.record(readout([row("Mohamed Ahmed"), row("Sara Ali")]), at: start.addingTimeInterval(1_800))
-
-        XCTAssertEqual(recorder.observations.count, 2)
-        let late = recorder.observations.first { $0.rawName == "Sara Ali" }
-        XCTAssertEqual(late?.firstSeen, start.addingTimeInterval(1_800))
-    }
-
-    func testDurationAccumulatesAcrossIntervals() {
-        let recorder = ParticipantRecorder(group: group())
-        recorder.record(readout([row("Mohamed Ahmed")]), at: start)
-        recorder.record(readout([row("Mohamed Ahmed")]), at: start.addingTimeInterval(600))
-        recorder.finish(at: start.addingTimeInterval(600))
-
-        XCTAssertEqual(recorder.observations[0].totalDuration, 600)
     }
 }

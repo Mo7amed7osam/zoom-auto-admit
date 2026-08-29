@@ -58,6 +58,18 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         return field
     }()
 
+    // Attendance group fields
+    private let attendanceGroupPopUp = NSPopUpButton()
+    private let groupTable = NSTableView()
+    private let groupNameField = NSTextField()
+    private let groupIgnoredField = NSTextField()
+    private let groupThresholdField = NSTextField()
+    private let groupRosterLabel = NSTextField(labelWithString: "")
+    private let groupRosterList = NSTextView()
+    private let groupNameError = SchedulerWindowController.errorLabel()
+    private let groupEmptyState = NSStackView()
+    private let groupFormContainer = NSView()
+
     // Profile editor fields
     private let profileNameField = NSTextField()
     private let profileAccountPopUp = NSPopUpButton()
@@ -100,6 +112,8 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         window.title = "Zoom Auto Admit"
         window.center()
         window.setFrameAutosaveName("SchedulerWindow")
+        window.minSize = NSSize(width: 820, height: 600)
+        window.titlebarAppearsTransparent = false
         super.init(window: window)
         window.delegate = self
         window.contentView = makeContentView()
@@ -115,6 +129,11 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         if !isDirty {
             configuration = coordinator.currentConfiguration
             reloadFromConfiguration()
+        }
+        // A saved frame can leave the window on a display that is no longer
+        // there, or one the user is not looking at.
+        if let window, let screen = NSScreen.main, !screen.visibleFrame.intersects(window.frame) {
+            window.center()
         }
         refreshDetectedAccounts(announce: false)
         NSApp.activate(ignoringOtherApps: true)
@@ -153,6 +172,11 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         profilesItem.view = makeProfilesTab()
         tabView.addTabViewItem(profilesItem)
 
+        let groupsItem = NSTabViewItem(identifier: "groups")
+        groupsItem.label = "Groups"
+        groupsItem.view = makeGroupsTab()
+        tabView.addTabViewItem(groupsItem)
+
         let container = NSView()
         container.addSubview(tabView)
         NSLayoutConstraint.activate([
@@ -168,7 +192,6 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         let view = NSView()
 
         configure(table: scheduleTable, columnTitle: "Schedules")
-        scheduleTable.rowHeight = 78
         scheduleTable.delegate = self
         scheduleTable.dataSource = self
         let scroll = scrollView(for: scheduleTable)
@@ -184,7 +207,8 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
             title: "No scheduled meetings",
             message: "Create a schedule and Zoom Auto Admit can prepare your meetings automatically.",
             buttonTitle: "Create Schedule",
-            action: #selector(addSchedule)
+            action: #selector(addSchedule),
+            symbol: "calendar.badge.clock"
         )
 
         recurrencePopUp.addItems(withTitles: ["One time", "Every day", "Selected weekdays"])
@@ -221,6 +245,8 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         }
         accountPopUp.target = self
         accountPopUp.action = #selector(fieldChanged)
+        attendanceGroupPopUp.target = self
+        attendanceGroupPopUp.action = #selector(fieldChanged)
 
         let weekdayRow = NSStackView(views: weekdayButtons)
         weekdayRow.orientation = .horizontal
@@ -248,6 +274,10 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
                 labelled("Meeting name", meetingNameField, error: meetingNameError),
                 labelled("Meeting ID or link", meetingIDField, error: meetingIDError),
                 labelled("", meetingIDHint)
+            ]),
+            section("Attendance", rows: [
+                labelled("Group", attendanceGroupPopUp),
+                labelled("", caption("Attendance is recorded only for schedules linked to a group."))
             ]),
             section("Before joining", rows: [
                 labelled("", muteMicrophoneButton),
@@ -325,6 +355,7 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
             meetingIDField.widthAnchor.constraint(equalToConstant: 200),
             launchEarlyField.widthAnchor.constraint(equalToConstant: 64),
             accountPopUp.widthAnchor.constraint(equalToConstant: 300),
+            attendanceGroupPopUp.widthAnchor.constraint(equalToConstant: 300),
             recurrencePopUp.widthAnchor.constraint(equalToConstant: 200),
             meetingKindPopUp.widthAnchor.constraint(equalToConstant: 200)
         ])
@@ -335,7 +366,6 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         let view = NSView()
 
         configure(table: profileTable, columnTitle: "Zoom Accounts")
-        profileTable.rowHeight = 52
         profileTable.delegate = self
         profileTable.dataSource = self
         let scroll = scrollView(for: profileTable)
@@ -351,7 +381,8 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
             title: "No Zoom accounts configured",
             message: "Add a saved Zoom account to use scheduled meetings.",
             buttonTitle: "Read Accounts from Zoom",
-            action: #selector(addProfileFromZoom)
+            action: #selector(addProfileFromZoom),
+            symbol: "person.crop.circle.badge.questionmark"
         )
 
         profileNameField.delegate = self
@@ -435,12 +466,261 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         return view
     }
 
+    private func makeGroupsTab() -> NSView {
+        let view = NSView()
+
+        configure(table: groupTable, columnTitle: "Groups")
+        groupTable.delegate = self
+        groupTable.dataSource = self
+        let scroll = scrollView(for: groupTable)
+
+        let addButton = iconButton("plus", action: #selector(addGroup), tooltip: "Add a group")
+        let removeButton = iconButton("minus", action: #selector(removeGroup), tooltip: "Delete the selected group")
+        let listButtons = NSStackView(views: [addButton, removeButton])
+        listButtons.orientation = .horizontal
+        listButtons.spacing = 6
+
+        buildEmptyState(
+            groupEmptyState,
+            title: "No groups yet",
+            message: "A group holds one class's official student list. Link a schedule to it and attendance is recorded automatically.",
+            buttonTitle: "Create Group",
+            action: #selector(addGroup),
+            symbol: "person.3"
+        )
+
+        groupNameField.delegate = self
+        groupIgnoredField.delegate = self
+        groupIgnoredField.placeholderString = "eyouth coordinator, Mohamed Hosam"
+        groupThresholdField.delegate = self
+        groupThresholdField.placeholderString = "90"
+
+        groupRosterList.isEditable = false
+        groupRosterList.drawsBackground = false
+        groupRosterList.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        let rosterScroll = NSScrollView()
+        rosterScroll.documentView = groupRosterList
+        rosterScroll.hasVerticalScroller = true
+        rosterScroll.borderType = .bezelBorder
+        rosterScroll.translatesAutoresizingMaskIntoConstraints = false
+        rosterScroll.heightAnchor.constraint(equalToConstant: 180).isActive = true
+        rosterScroll.widthAnchor.constraint(equalToConstant: 380).isActive = true
+
+        let importButton = NSButton(title: "Import CSV…", target: self, action: #selector(importRoster))
+        let pasteButton = NSButton(title: "Paste Names…", target: self, action: #selector(pasteRoster))
+        let clearRosterButton = NSButton(title: "Clear Roster", target: self, action: #selector(clearRoster))
+
+        let form = NSStackView(views: [
+            section("Group", rows: [
+                labelled("Name", groupNameField, error: groupNameError),
+                labelled("Ignore names", groupIgnoredField),
+                labelled("", caption("Comma-separated. The host account is already excluded automatically.")),
+                labelled("Auto-accept above", groupThresholdField, suffix: "%")
+            ]),
+            section("Official student list", rows: [
+                // The import controls sit directly under the heading. Putting
+                // them below a 180pt list pushed them to the bottom of the
+                // window, where they were easy to miss entirely.
+                labelled("", horizontal([importButton, pasteButton, clearRosterButton])),
+                labelled("", groupRosterLabel),
+                labelled("", rosterScroll)
+            ])
+        ])
+        form.orientation = .vertical
+        form.alignment = .leading
+        form.spacing = 18
+
+        let saveRow = NSStackView(views: [NSView(), NSButton(title: "Save", target: self, action: #selector(save))])
+        saveRow.orientation = .horizontal
+
+        let formScroll = NSScrollView()
+        formScroll.hasVerticalScroller = true
+        formScroll.drawsBackground = false
+        formScroll.documentView = form
+        formScroll.translatesAutoresizingMaskIntoConstraints = false
+        form.translatesAutoresizingMaskIntoConstraints = false
+
+        groupFormContainer.translatesAutoresizingMaskIntoConstraints = false
+        groupFormContainer.addSubview(formScroll)
+        NSLayoutConstraint.activate([
+            formScroll.leadingAnchor.constraint(equalTo: groupFormContainer.leadingAnchor),
+            formScroll.trailingAnchor.constraint(equalTo: groupFormContainer.trailingAnchor),
+            formScroll.topAnchor.constraint(equalTo: groupFormContainer.topAnchor),
+            formScroll.bottomAnchor.constraint(equalTo: groupFormContainer.bottomAnchor),
+            form.topAnchor.constraint(equalTo: formScroll.contentView.topAnchor),
+            form.leadingAnchor.constraint(equalTo: formScroll.contentView.leadingAnchor)
+        ])
+
+        [scroll, listButtons, groupEmptyState, groupFormContainer, saveRow].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview($0)
+        }
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 10),
+            scroll.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            scroll.widthAnchor.constraint(equalToConstant: 220),
+            scroll.bottomAnchor.constraint(equalTo: listButtons.topAnchor, constant: -8),
+
+            listButtons.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            listButtons.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
+
+            groupFormContainer.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 20),
+            groupFormContainer.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            groupFormContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
+            groupFormContainer.bottomAnchor.constraint(equalTo: saveRow.topAnchor, constant: -12),
+
+            groupEmptyState.centerXAnchor.constraint(equalTo: groupFormContainer.centerXAnchor),
+            groupEmptyState.centerYAnchor.constraint(equalTo: groupFormContainer.centerYAnchor),
+            groupEmptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
+
+            saveRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -10),
+            saveRow.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14),
+
+            groupNameField.widthAnchor.constraint(equalToConstant: 300),
+            groupIgnoredField.widthAnchor.constraint(equalToConstant: 300),
+            groupThresholdField.widthAnchor.constraint(equalToConstant: 70)
+        ])
+        return view
+    }
+
+    private var selectedGroupIndex: Int? {
+        groupTable.selectedRow >= 0 && configuration.studentGroups.indices.contains(groupTable.selectedRow)
+            ? groupTable.selectedRow
+            : nil
+    }
+
+    private func loadSelectedGroup() {
+        guard let index = selectedGroupIndex else { return }
+        let group = configuration.studentGroups[index]
+        groupNameField.stringValue = group.name
+        groupIgnoredField.stringValue = group.ignoredParticipantNames.joined(separator: ", ")
+        groupThresholdField.stringValue = String(Int(group.autoAcceptConfidence * 100))
+        groupRosterLabel.stringValue = "\(group.students.count) student(s)"
+        groupRosterList.string = group.students
+            .map { student in
+                let alias = student.aliases.isEmpty ? "" : "   (also: \(student.aliases.joined(separator: ", ")))"
+                return student.officialName + alias
+            }
+            .joined(separator: "\n")
+        updateChrome()
+    }
+
+    private func storeSelectedGroup() {
+        guard let index = selectedGroupIndex else { return }
+        configuration.studentGroups[index].name = groupNameField.stringValue
+        configuration.studentGroups[index].ignoredParticipantNames = groupIgnoredField.stringValue
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let percent = Double(groupThresholdField.stringValue) ?? 90
+        configuration.studentGroups[index].autoAcceptConfidence = min(max(percent / 100, 0.5), 1.0)
+    }
+
+    @objc private func addGroup() {
+        storeSelectedGroup()
+        configuration.studentGroups.append(StudentGroup(name: "New group"))
+        groupTable.reloadData()
+        groupTable.selectRowIndexes([configuration.studentGroups.count - 1], byExtendingSelection: false)
+        loadSelectedGroup()
+        markDirty()
+        window?.makeFirstResponder(groupNameField)
+    }
+
+    @objc private func removeGroup() {
+        guard let index = selectedGroupIndex else { return }
+        let group = configuration.studentGroups[index]
+        let usedBy = configuration.schedules.filter { $0.attendanceGroupID == group.id }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Delete “\(group.name)”?"
+        alert.informativeText = usedBy.isEmpty
+            ? "Its roster and learned aliases will be removed. Past attendance history is kept."
+            : "\(usedBy.count) schedule(s) use this group and will stop recording attendance."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+
+        configuration.studentGroups.remove(at: index)
+        groupTable.reloadData()
+        loadSelectedGroup()
+        markDirty()
+    }
+
+    @objc private func importRoster() {
+        guard let index = selectedGroupIndex else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText, .plainText]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url,
+              let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return
+        }
+        applyRoster(text, to: index)
+    }
+
+    @objc private func pasteRoster() {
+        guard let index = selectedGroupIndex else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Paste the student list"
+        alert.informativeText = "One name per line, or CSV with a Name column."
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 200))
+        text.isEditable = true
+        text.font = .systemFont(ofSize: NSFont.systemFontSize)
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 380, height: 200))
+        scroll.documentView = text
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Import")
+        alert.window.initialFirstResponder = text
+
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        applyRoster(text.string, to: index)
+    }
+
+    /// Merging rather than replacing is what preserves learned aliases.
+    private func applyRoster(_ text: String, to index: Int) {
+        let result = RosterImporter.merge(text, into: configuration.studentGroups[index].students)
+        configuration.studentGroups[index].students = result.students
+        loadSelectedGroup()
+        markDirty()
+
+        var detail = "\(result.addedCount) added, \(result.updatedCount) updated."
+        if !result.skippedLines.isEmpty {
+            detail += "\n\(result.skippedLines.count) line(s) had no usable name and were skipped."
+        }
+        let alert = NSAlert()
+        alert.messageText = "Roster imported"
+        alert.informativeText = detail
+        alert.runModal()
+    }
+
+    @objc private func clearRoster() {
+        guard let index = selectedGroupIndex else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Clear the roster for “\(configuration.studentGroups[index].name)”?"
+        alert.informativeText = "Learned aliases for these students are removed too."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Clear")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+
+        configuration.studentGroups[index].students = []
+        loadSelectedGroup()
+        markDirty()
+    }
+
     // MARK: Binding
 
     private func reloadFromConfiguration() {
         rebuildAccountPopUp()
+        rebuildAttendanceGroupPopUp()
         scheduleTable.reloadData()
         profileTable.reloadData()
+        groupTable.reloadData()
 
         if scheduleTable.selectedRow < 0, !configuration.schedules.isEmpty {
             scheduleTable.selectRowIndexes([0], byExtendingSelection: false)
@@ -448,9 +728,13 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         if profileTable.selectedRow < 0, !configuration.accountProfiles.isEmpty {
             profileTable.selectRowIndexes([0], byExtendingSelection: false)
         }
+        if groupTable.selectedRow < 0, !configuration.studentGroups.isEmpty {
+            groupTable.selectRowIndexes([0], byExtendingSelection: false)
+        }
 
         loadSelectedSchedule()
         loadSelectedProfile()
+        loadSelectedGroup()
         updateChrome()
     }
 
@@ -512,6 +796,12 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         if let profileIndex = configuration.accountProfiles.firstIndex(where: { $0.id == schedule.accountProfileID }) {
             accountPopUp.selectItem(at: profileIndex)
         }
+        if let groupID = schedule.attendanceGroupID,
+           let groupIndex = configuration.studentGroups.firstIndex(where: { $0.id == groupID }) {
+            attendanceGroupPopUp.selectItem(at: groupIndex + 1)
+        } else {
+            attendanceGroupPopUp.selectItem(at: 0)
+        }
         updateChrome()
     }
 
@@ -560,7 +850,22 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
             schedule.accountProfileID = configuration.accountProfiles[profileIndex].id
         }
 
+        // Index 0 is "None"; the rest map onto the groups in order.
+        let groupIndex = attendanceGroupPopUp.indexOfSelectedItem - 1
+        schedule.attendanceGroupID = configuration.studentGroups.indices.contains(groupIndex)
+            ? configuration.studentGroups[groupIndex].id
+            : nil
+
         configuration.schedules[index] = schedule
+    }
+
+    /// "None" first, so a schedule without attendance stays the default.
+    private func rebuildAttendanceGroupPopUp() {
+        attendanceGroupPopUp.removeAllItems()
+        attendanceGroupPopUp.addItem(withTitle: "None — don't record attendance")
+        for group in configuration.studentGroups {
+            attendanceGroupPopUp.addItem(withTitle: "\(group.name) (\(group.students.count) students)")
+        }
     }
 
     private func loadSelectedProfile() {
@@ -654,6 +959,7 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
     private func updateChrome() {
         storeSelectedSchedule()
         storeSelectedProfile()
+        storeSelectedGroup()
 
         let scheduleIssues = selectedScheduleIndex.map {
             ScheduleValidation.validate(configuration.schedules[$0], in: configuration)
@@ -670,7 +976,20 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         show(profileIssues, .name, on: profileNameError)
         show(profileIssues, .accountIdentifier, on: profileAccountError)
 
+        let groupNameMissing = selectedGroupIndex.map {
+            configuration.studentGroups[$0].name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } ?? false
+        groupNameError.stringValue = groupNameMissing ? "⚠ Enter a name" : ""
+        groupNameError.isHidden = !groupNameMissing
+
+        let hasGroups = !configuration.studentGroups.isEmpty
+        groupEmptyState.isHidden = hasGroups
+        groupFormContainer.isHidden = !hasGroups
+
         let everythingValid = ScheduleValidation.isValid(configuration)
+            && !configuration.studentGroups.contains {
+                $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
         saveButton.isEnabled = isDirty && everythingValid
         profileSaveButton.isEnabled = isDirty && everythingValid
         runNowButton.isEnabled = selectedScheduleIndex != nil
@@ -736,6 +1055,7 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
     @objc private func save() {
         storeSelectedSchedule()
         storeSelectedProfile()
+        storeSelectedGroup()
 
         guard ScheduleValidation.isValid(configuration) else {
             updateChrome()
@@ -747,7 +1067,9 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         isDirty = false
         scheduleTable.reloadData()
         profileTable.reloadData()
+        groupTable.reloadData()
         rebuildAccountPopUp()
+        rebuildAttendanceGroupPopUp()
         updateChrome()
         showSavedFeedback()
     }
@@ -953,6 +1275,13 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         return stack
     }
 
+    private func horizontal(_ views: [NSView]) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.spacing = 8
+        return stack
+    }
+
     private func caption(_ text: String) -> NSTextField {
         let field = NSTextField(wrappingLabelWithString: text)
         field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -966,8 +1295,14 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         title: String,
         message: String,
         buttonTitle: String,
-        action: Selector
+        action: Selector,
+        symbol: String = "tray"
     ) {
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 34, weight: .light)
+        icon.contentTintColor = .tertiaryLabelColor
+
         let titleLabel = NSTextField(labelWithString: title)
         titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
         titleLabel.alignment = .center
@@ -978,11 +1313,14 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         messageLabel.preferredMaxLayoutWidth = 320
 
         let button = NSButton(title: buttonTitle, target: self, action: action)
+        button.bezelStyle = .rounded
+        button.controlSize = .large
 
         stack.orientation = .vertical
         stack.alignment = .centerX
-        stack.spacing = 10
-        [titleLabel, messageLabel, button].forEach { stack.addArrangedSubview($0) }
+        stack.spacing = 12
+        [icon, titleLabel, messageLabel, button].forEach { stack.addArrangedSubview($0) }
+        stack.setCustomSpacing(16, after: icon)
     }
 
     private func iconButton(_ symbol: String, action: Selector, tooltip: String) -> NSButton {
@@ -1047,12 +1385,33 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
         table.usesAlternatingRowBackgroundColors = false
     }
 
-    private func scrollView(for table: NSTableView) -> NSScrollView {
+    /// Lists are presented as a sidebar, which is what a list-plus-detail
+    /// window looks like everywhere else on the system.
+    private func scrollView(for table: NSTableView) -> NSView {
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        return scroll
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        let backdrop = NSVisualEffectView()
+        backdrop.material = .sidebar
+        backdrop.blendingMode = .behindWindow
+        backdrop.state = .followsWindowActiveState
+        backdrop.wantsLayer = true
+        backdrop.layer?.cornerRadius = 8
+        backdrop.addSubview(scroll)
+
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: backdrop.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor)
+        ])
+        return backdrop
     }
 }
 
@@ -1060,7 +1419,9 @@ final class SchedulerWindowController: NSWindowController, NSWindowDelegate {
 
 extension SchedulerWindowController: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        tableView === scheduleTable ? configuration.schedules.count : configuration.accountProfiles.count
+        if tableView === scheduleTable { return configuration.schedules.count }
+        if tableView === groupTable { return configuration.studentGroups.count }
+        return configuration.accountProfiles.count
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -1078,6 +1439,22 @@ extension SchedulerWindowController: NSTableViewDataSource, NSTableViewDelegate 
             )
         }
 
+        if tableView === groupTable {
+            guard configuration.studentGroups.indices.contains(row) else { return nil }
+            let group = configuration.studentGroups[row]
+            let linked = configuration.schedules.filter { $0.attendanceGroupID == group.id }.count
+            return card(
+                title: group.name,
+                subtitle: "\(group.students.count) student(s)",
+                detail: linked == 0 ? "Not linked to a schedule" : "\(linked) schedule(s)",
+                badge: nil,
+                // Amber when nothing will ever record into it.
+                dotColor: group.students.isEmpty || linked == 0
+                    ? StatusLevel.warning.color
+                    : StatusLevel.normal.color
+            )
+        }
+
         guard configuration.accountProfiles.indices.contains(row) else { return nil }
         let profile = configuration.accountProfiles[row]
         let valid = ScheduleValidation.isValid(profile)
@@ -1088,6 +1465,25 @@ extension SchedulerWindowController: NSTableViewDataSource, NSTableViewDelegate 
             badge: nil,
             dotColor: valid ? StatusLevel.normal.color : StatusLevel.error.color
         )
+    }
+
+    /// Row height follows the number of lines the row actually shows.
+    ///
+    /// These were fixed constants, guessed per table, and the group rows were
+    /// given 44pt for three lines of content — which clipped their titles in
+    /// half. Deriving it from the line count keeps every list honest.
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        let lines: Int
+        if tableView === scheduleTable {
+            lines = 4          // name · schedule · account+meeting · auto admit
+        } else if tableView === groupTable {
+            lines = 3          // name · student count · linked schedules
+        } else {
+            lines = 2          // profile name · zoom account
+        }
+        let titleLine = ceil(NSFont.systemFont(ofSize: NSFont.systemFontSize).boundingRectForFont.height)
+        let detailLine = ceil(NSFont.systemFont(ofSize: NSFont.smallSystemFontSize).boundingRectForFont.height)
+        return 14 + titleLine + CGFloat(lines - 1) * (detailLine + 3)
     }
 
     private func card(
@@ -1162,6 +1558,8 @@ extension SchedulerWindowController: NSTableViewDataSource, NSTableViewDelegate 
         guard let table = notification.object as? NSTableView else { return }
         if table === scheduleTable {
             storeSelectedSchedule()
+        } else if table === groupTable {
+            storeSelectedGroup()
         } else {
             storeSelectedProfile()
         }
@@ -1171,6 +1569,8 @@ extension SchedulerWindowController: NSTableViewDataSource, NSTableViewDelegate 
         guard let table = notification.object as? NSTableView else { return }
         if table === scheduleTable {
             loadSelectedSchedule()
+        } else if table === groupTable {
+            loadSelectedGroup()
         } else {
             loadSelectedProfile()
         }

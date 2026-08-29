@@ -1,6 +1,7 @@
 import AppKit
 import ServiceManagement
 import ZoomAXSupport
+import ZoomAutoAdmitCore
 
 /// Settings, including the diagnostic tools that used to sit in the main menu.
 ///
@@ -13,6 +14,23 @@ final class SettingsWindowController: NSWindowController {
     var onOpenSchedulerLog: (() -> Void)?
 
     private let accessibilityStatusLabel = NSTextField(labelWithString: "")
+    private let periodicSnapshotButton = NSButton(
+        checkboxWithTitle: "Periodic participant snapshots",
+        target: nil,
+        action: nil
+    )
+    private let snapshotIntervalField = NSTextField()
+    private let postAdmitSnapshotButton = NSButton(
+        checkboxWithTitle: "Snapshot after Auto Admit",
+        target: nil,
+        action: nil
+    )
+    private let postAdmitDelayField = NSTextField()
+    private let aiKeyField = NSSecureTextField()
+    private let aiKeyStatusLabel = NSTextField(labelWithString: "")
+    private let aiModelField = NSTextField()
+    private lazy var saveKeyButton = NSButton(title: "Save Key", target: self, action: #selector(saveAPIKey))
+    private lazy var clearKeyButton = NSButton(title: "Remove Key", target: self, action: #selector(clearAPIKey))
     private let launchAtLoginButton = NSButton(checkboxWithTitle: "Launch at Login", target: nil, action: nil)
     private let microphoneDefaultButton = NSButton(
         checkboxWithTitle: "Mute microphone before joining",
@@ -63,6 +81,23 @@ final class SettingsWindowController: NSWindowController {
         accessibilityStatusLabel.textColor = trusted ? .systemGreen : .systemRed
 
         launchAtLoginButton.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        aiKeyField.placeholderString = "sk-or-…"
+        aiKeyField.stringValue = ""
+        aiKeyStatusLabel.stringValue = APIKeyStore.hasKey
+            ? "Key stored: \(APIKeyStore.redacted(APIKeyStore.load()))"
+            : "No key stored — AI matching is off."
+        aiKeyStatusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        aiKeyStatusLabel.textColor = .secondaryLabelColor
+        aiModelField.stringValue = SchedulerDefaults.aiModel
+        aiModelField.placeholderString = "openai/gpt-4o-mini"
+        clearKeyButton.isEnabled = APIKeyStore.hasKey
+
+        let snapshots = SchedulerDefaults.snapshotSchedule
+        periodicSnapshotButton.state = snapshots.periodicEnabled ? .on : .off
+        snapshotIntervalField.stringValue = String(Int(snapshots.interval / 60))
+        postAdmitSnapshotButton.state = snapshots.postAdmitEnabled ? .on : .off
+        postAdmitDelayField.stringValue = String(Int(snapshots.postAdmitDelay))
+
         microphoneDefaultButton.state = SchedulerDefaults.mutesMicrophone ? .on : .off
         cameraDefaultButton.state = SchedulerDefaults.disablesCamera ? .on : .off
         autoAdmitDefaultButton.state = SchedulerDefaults.enablesAutoAdmit ? .on : .off
@@ -71,6 +106,16 @@ final class SettingsWindowController: NSWindowController {
     private func makeContentView() -> NSView {
         launchAtLoginButton.target = self
         launchAtLoginButton.action = #selector(toggleLaunchAtLogin)
+        for control in [periodicSnapshotButton, postAdmitSnapshotButton] {
+            control.target = self
+            control.action = #selector(snapshotSettingsChanged)
+        }
+        for field in [snapshotIntervalField, postAdmitDelayField] {
+            field.target = self
+            field.action = #selector(snapshotSettingsChanged)
+            field.widthAnchor.constraint(equalToConstant: 60).isActive = true
+        }
+
         microphoneDefaultButton.target = self
         microphoneDefaultButton.action = #selector(toggleDefaults)
         cameraDefaultButton.target = self
@@ -96,6 +141,28 @@ final class SettingsWindowController: NSWindowController {
                 microphoneDefaultButton,
                 cameraDefaultButton,
                 autoAdmitDefaultButton
+            ]),
+            section("Attendance backup", views: [
+                periodicSnapshotButton,
+                row([NSTextField(labelWithString: "Interval"), snapshotIntervalField,
+                     NSTextField(labelWithString: "minutes")]),
+                postAdmitSnapshotButton,
+                row([NSTextField(labelWithString: "Post-admit delay"), postAdmitDelayField,
+                     NSTextField(labelWithString: "seconds")]),
+                caption("""
+                Snapshots record which Zoom identities were visible at that moment. \
+                They are evidence of attendance, not a live presence tracker.
+                """)
+            ]),
+            section("AI attendance matching", views: [
+                aiKeyField,
+                aiKeyStatusLabel,
+                row([saveKeyButton, clearKeyButton]),
+                aiModelField,
+                caption("""
+                Used only for student names local matching cannot settle. \
+                The key is stored in your macOS Keychain, never in a file and never in a log.
+                """)
             ]),
             section("Advanced", views: [
                 row([
@@ -161,10 +228,40 @@ final class SettingsWindowController: NSWindowController {
         refresh()
     }
 
+    /// Values are clamped by `SnapshotSchedule`, so a typo cannot turn the
+    /// snapshot system into a poll.
+    @objc private func snapshotSettingsChanged() {
+        SchedulerDefaults.snapshotSchedule = SnapshotSchedule(
+            periodicEnabled: periodicSnapshotButton.state == .on,
+            interval: (Double(snapshotIntervalField.stringValue) ?? 15) * 60,
+            postAdmitEnabled: postAdmitSnapshotButton.state == .on,
+            postAdmitDelay: Double(postAdmitDelayField.stringValue) ?? 8
+        )
+        refresh()
+    }
+
     @objc private func toggleDefaults() {
         SchedulerDefaults.mutesMicrophone = microphoneDefaultButton.state == .on
         SchedulerDefaults.disablesCamera = cameraDefaultButton.state == .on
         SchedulerDefaults.enablesAutoAdmit = autoAdmitDefaultButton.state == .on
+    }
+
+    @objc private func saveAPIKey() {
+        let key = aiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        if APIKeyStore.save(key) {
+            // Cleared immediately so the key is not left sitting in a view.
+            aiKeyField.stringValue = ""
+            SchedulerDefaults.aiModel = aiModelField.stringValue
+        } else {
+            presentError("Couldn't save the key", detail: "The macOS Keychain refused the item.")
+        }
+        refresh()
+    }
+
+    @objc private func clearAPIKey() {
+        APIKeyStore.delete()
+        refresh()
     }
 
     @objc private func openAccessibilitySettings() { onOpenAccessibilitySettings?() }

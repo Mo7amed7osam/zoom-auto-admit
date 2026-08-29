@@ -104,6 +104,39 @@ public extension ZoomAXSupport {
         return result == .success ? .pressed : .axError(result)
     }
 
+    /// Presses a menu item located by its AppKit action identifier.
+    ///
+    /// Identifiers are used rather than titles because they do not change with
+    /// localisation, and because this is how the participants panel is opened:
+    /// `View ▸ Show participants` (`onManageParticipants:`) works even when the
+    /// meeting window has been moved to another Space, where the in-meeting
+    /// toolbar button is unreachable.
+    static func pressMenuItem(
+        withIdentifier identifier: String,
+        in reading: MenuBarReading
+    ) -> MenuPressOutcome {
+        guard let match = menuItem(withIdentifier: identifier, inMenuBar: reading.root) else {
+            return .elementUnavailable
+        }
+        guard let element = resolveElement(at: match.indexPath, from: reading.menuBarElement) else {
+            return .elementUnavailable
+        }
+        guard copyStringAttribute(element, kAXRoleAttribute) == "AXMenuItem" else {
+            return .verificationFailed("element is no longer a menu item")
+        }
+        guard copyStringAttribute(element, kAXIdentifierAttribute) == identifier else {
+            return .verificationFailed("menu item identifier changed")
+        }
+        guard isEnabled(element) else {
+            return .verificationFailed("menu item is disabled")
+        }
+        guard actionNames(of: element).contains(pressAction) else {
+            return .verificationFailed("menu item does not expose AXPress")
+        }
+        let result = press(element)
+        return result == .success ? .pressed : .axError(result)
+    }
+
     /// Presses a Zoom application menu entry such as `Start meeting`, with the
     /// same re-verification discipline.
     static func pressApplicationMenuItem(

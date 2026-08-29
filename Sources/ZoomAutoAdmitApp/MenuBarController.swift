@@ -11,6 +11,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onCheckAgain: (() -> Void)?
     var onOpenSchedules: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onOpenAttendance: (() -> Void)?
+    var onFinalizeAttendance: (() -> Void)?
+    var onSnapshotNow: (() -> Void)?
+    /// Snapshot evidence lines while a class is running. Deliberately not a
+    /// live-presence readout: snapshots cannot support that claim.
+    var attendanceSummary: (() -> [String]?)?
     var onRunSchedule: ((ZoomSchedule) -> Void)?
     var onShowRunDetails: (() -> Void)?
     var onQuit: (() -> Void)?
@@ -61,6 +67,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         addNextMeetingSection()
         menu.addItem(.separator())
+        addAttendanceSection()
         addActionsSection()
     }
 
@@ -120,7 +127,37 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         addDetail("Auto Admit: \(next.schedule.enablesAutoAdmit ? "On" : "Off")")
     }
 
+    private func addAttendanceSection() {
+        guard let lines = attendanceSummary?(), !lines.isEmpty else { return }
+        let heading = NSMenuItem(title: "Attendance backup", action: nil, keyEquivalent: "")
+        heading.isEnabled = false
+        menu.addItem(heading)
+        lines.forEach(addDetail)
+        menu.addItem(.separator())
+    }
+
     private func addActionsSection() {
+        let attendance = NSMenuItem(title: "Attendance", action: nil, keyEquivalent: "")
+        let attendanceMenu = NSMenu()
+        let review = NSMenuItem(title: "Review Attendance…", action: #selector(openAttendance), keyEquivalent: "")
+        review.target = self
+        attendanceMenu.addItem(review)
+
+        let snapshot = NSMenuItem(title: "Take Snapshot Now", action: #selector(snapshotNow), keyEquivalent: "")
+        snapshot.target = self
+        snapshot.isEnabled = attendanceSummary?() != nil
+        attendanceMenu.addItem(snapshot)
+        let finalize = NSMenuItem(
+            title: "Finalize Attendance",
+            action: #selector(finalizeAttendance),
+            keyEquivalent: ""
+        )
+        finalize.target = self
+        finalize.isEnabled = attendanceSummary?() != nil
+        attendanceMenu.addItem(finalize)
+        attendance.submenu = attendanceMenu
+        menu.addItem(attendance)
+
         let schedules = NSMenuItem(title: "Schedules", action: nil, keyEquivalent: "")
         schedules.submenu = schedulesSubmenu()
         menu.addItem(schedules)
@@ -263,6 +300,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func checkAgain() { onCheckAgain?() }
     @objc private func openSchedules() { onOpenSchedules?() }
     @objc private func openSettings() { onOpenSettings?() }
+    @objc private func openAttendance() { onOpenAttendance?() }
+    @objc private func finalizeAttendance() { onFinalizeAttendance?() }
+    @objc private func snapshotNow() { onSnapshotNow?() }
     @objc private func showRunDetails() { onShowRunDetails?() }
     @objc private func quit() { onQuit?() }
 

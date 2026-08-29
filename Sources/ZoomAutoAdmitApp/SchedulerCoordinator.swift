@@ -21,6 +21,9 @@ final class SchedulerCoordinator {
     /// Supplied by the app delegate so the coordinator drives the one shared monitor.
     private let startAutoAdmit: () -> Void
     private let stopAutoAdmit: () -> Void
+    /// Attendance is optional and isolated: if it fails, admissions continue.
+    var startAttendance: ((StudentGroup, ZoomSchedule) -> Void)?
+    var stopAttendance: ((_ finalize: Bool) -> Void)?
 
     private var scheduler: SchedulerService!
     private var configuration: SchedulerConfiguration
@@ -211,6 +214,14 @@ final class SchedulerCoordinator {
         switch result {
         case .completed(let autoAdmitStarted):
             schedulerLog.write("Workflow completed for \(schedule.name); autoAdmit=\(autoAdmitStarted)")
+            // Attendance recording begins only once the meeting is verified.
+            if let group = configuration.group(for: schedule) {
+                schedulerLog.write("Attendance: recording for group \(group.name)")
+                DispatchQueue.main.async { [startAttendance] in
+                    startAttendance?(group, schedule)
+                }
+            }
+
             if autoAdmitStarted {
                 schedulerStartedMonitoring.insert(schedule.id)
                 scheduler.registerMonitoring(for: schedule, startedAt: Date())
@@ -252,7 +263,12 @@ final class SchedulerCoordinator {
         }
         // Only monitoring stops. The Zoom meeting itself is never ended.
         schedulerLog.write("End time reached for \(schedule.name); stopping Auto Admit only")
-        DispatchQueue.main.async { [stopAutoAdmit] in stopAutoAdmit() }
+        DispatchQueue.main.async { [stopAutoAdmit, stopAttendance] in
+            stopAutoAdmit()
+            // The register is closed at the configured end time, which is the
+            // point at which "not seen yet" honestly becomes "absent".
+            stopAttendance?(true)
+        }
         notify(title: "Auto Admit stopped", body: "End time reached for \(schedule.name)")
     }
 

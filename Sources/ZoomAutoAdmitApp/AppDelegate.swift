@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var schedulerCoordinator: SchedulerCoordinator!
     private var schedulerWindowController: SchedulerWindowController?
     private var settingsWindowController: SettingsWindowController?
+    private var attendanceWindowController: AttendanceWindowController?
+    private let attendanceCoordinator = AttendanceCoordinator()
     private var accessibilityCheckGeneration: UInt64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -35,6 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self, self.state.monitoringEnabled else { return }
                 self.state.apply(event)
+                // An admission is worth a snapshot, but a burst of them is worth
+                // only one; the coordinator coalesces them.
+                if case .admitted = event {
+                    self.attendanceCoordinator.noteAdmit()
+                }
             }
         }
         menuBarController = MenuBarController(state: state)
@@ -42,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // The scheduler drives the same monitor the menu commands drive, so a
         // scheduled start can never create a second Waiting Room loop.
+        attendanceCoordinator.onChange = { [weak self] in self?.menuBarController.refresh() }
         schedulerCoordinator = SchedulerCoordinator(
             state: state,
             startAutoAdmit: { [weak self] in self?.setMonitoring(true) },
@@ -69,10 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if CommandLine.arguments.contains(ParticipantsCapture.launchArgument) {
-            let startsMeeting = !CommandLine.arguments.contains("--no-start")
-            DispatchQueue.global(qos: .userInitiated).async {
-                ParticipantsCapture.run(startMeeting: startsMeeting)
-            }
+            DispatchQueue.global(qos: .userInitiated).async { ParticipantsCapture.run() }
         }
         if CommandLine.arguments.contains(ParticipantsCheck.launchArgument) {
             DispatchQueue.global(qos: .userInitiated).async { ParticipantsCheck.run() }
@@ -119,6 +124,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController.onOpenSettings = { [weak self] in
             self?.openSettingsWindow()
         }
+        menuBarController.onOpenAttendance = { [weak self] in
+            self?.openAttendanceWindow()
+        }
+        menuBarController.onFinalizeAttendance = { [weak self] in
+            _ = self?.attendanceCoordinator.finalize()
+            self?.menuBarController.refresh()
+        }
+        menuBarController.attendanceSummary = { [weak self] in
+            self?.attendanceCoordinator.liveSummary?.lines
+        }
+        menuBarController.onSnapshotNow = { [weak self] in
+            self?.attendanceCoordinator.snapshotNow()
+        }
         menuBarController.onRunSchedule = { [weak self] schedule in
             self?.schedulerCoordinator.runNow(schedule)
         }
@@ -139,6 +157,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.monitor.stop()
             NSApp.terminate(nil)
         }
+    }
+
+    private func openAttendanceWindow() {
+        if attendanceWindowController == nil {
+            attendanceWindowController = AttendanceWindowController(
+                store: AttendanceStore(),
+                configurationProvider: { [weak self] in
+                    self?.schedulerCoordinator.currentConfiguration ?? SchedulerConfiguration()
+                },
+                configurationWriter: { [weak self] configuration in
+                    self?.schedulerCoordinator.update(configuration: configuration)
+                },
+                liveSessionProvider: { [weak self] in
+                    self?.attendanceCoordinator.currentSession
+                },
+                finalizeHandler: { [weak self] in
+                    self?.attendanceCoordinator.finalize()
+                }
+            )
+        }
+        attendanceWindowController?.present()
     }
 
     private func openSettingsWindow() {
