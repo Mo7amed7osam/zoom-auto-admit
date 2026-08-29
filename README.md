@@ -70,6 +70,12 @@ Relevant lines begin with `[attendance]` and report schedule/group linkage, sess
 
 For a live isolation test, start a linked scheduled meeting and choose **Attendance → Take Snapshot Now**. Then verify `parser available=true`, a `snapshot-captured` line, and `session-saved=true`. Persisted sessions are under `~/Library/Application Support/Zoom Auto Admit/Attendance/` and appear in **Attendance → Review Attendance…**.
 
+### Match with AI
+
+Add an OpenRouter key under **Settings → AI attendance matching**, then open an attendance session and press **Match with AI**. Exact names, learned aliases, and other confidently resolved deterministic matches remain local. After those are removed, one request contains every unresolved student and every still-unclaimed observed PANELIST identity; no fuzzy score, token overlap, transliteration score, or script check filters AI candidate pairs.
+
+The request uses temporary IDs such as `s0` and `z0`, never session/student UUIDs. OpenRouter is instructed to compare the whole remaining roster globally, account for Arabic/English transliteration and incomplete names, and return one-to-one assignments. Returned IDs are validated against that exact request and its current session observations. A model response cannot create attendance evidence, reference another group, reuse a claimed Zoom identity, or overwrite a manual decision. Matches below the group's threshold—or explicitly marked `needs_review`—stay **Needs Review**.
+
 ## Native menu bar app
 
 The primary build is a native macOS menu-bar application. It has no normal window, uses an SF Symbol status icon, and runs with AppKit's accessory activation policy plus `LSUIElement=true`, so it does not appear in the Dock during normal use.

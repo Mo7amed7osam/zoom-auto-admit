@@ -381,11 +381,10 @@ final class SnapshotFinalizationTests: XCTestCase {
 
         let summary = AIReconciliation.apply(
             AIMatchResponse(
-                matches: [AIMatchProposal(studentId: "s0", zoomName: "Ghost Student", confidence: 0.99, reason: nil)],
-                unresolvedZoomNames: []
+                matches: [AIMatchProposal(studentID: "s0", observedNameID: "z0", confidence: 0.99)]
             ),
             to: session,
-            ids: ["s0": student.id],
+            ids: AIMatchRequestIDs(students: ["s0": student.id], observations: [:]),
             autoAcceptConfidence: 0.9
         )
 

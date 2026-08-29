@@ -313,9 +313,10 @@ final class AttendanceWindowController: NSWindowController {
         aiButton.isEnabled = false
         aiButton.title = "Matching…"
         let threshold = autoAcceptConfidence(for: session)
+        let client = OpenRouterClient(configuration: .init(model: SchedulerDefaults.aiModel))
 
         Task { [weak self] in
-            let result = await OpenRouterClient().proposeMatches(for: request)
+            let result = await client.proposeMatches(for: request)
             await MainActor.run {
                 guard let self else { return }
                 self.aiButton.title = "Match with AI"
