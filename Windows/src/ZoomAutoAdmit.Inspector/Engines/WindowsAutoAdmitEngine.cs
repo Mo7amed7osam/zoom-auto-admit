@@ -11,6 +11,6 @@ public sealed class WindowsAutoAdmitEngine : IAutoAdmitEngine
     public Task<int> RunAsync(CliOptions options, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(WaitingRoomAutoAdmitCommand.Execute(options));
+        return Task.FromResult(WaitingRoomAutoAdmitCommand.Execute(options, cancellationToken));
     }
 }

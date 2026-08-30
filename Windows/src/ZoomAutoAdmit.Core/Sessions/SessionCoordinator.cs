@@ -78,6 +78,41 @@ public sealed class SessionCoordinator
         }
     }
 
+    public SessionAllocationResult AllocateWeb(
+        string accountId,
+        DateTimeOffset? startTime = null,
+        Guid? sessionId = null)
+    {
+        string webProfileName;
+        try
+        {
+            webProfileName = AccountWebProfile.ForAccount(accountId);
+        }
+        catch (ArgumentException ex)
+        {
+            return SessionAllocationResult.Failure(
+                SessionAllocationError.InvalidAccountId,
+                ex.Message);
+        }
+
+        Guid id = sessionId ?? Guid.NewGuid();
+        var session = new ActiveSession(
+            id,
+            accountId.Trim(),
+            SessionEngineType.Web,
+            startTime ?? DateTimeOffset.UtcNow,
+            SessionStatus.Allocated,
+            webProfileName);
+        lock (_allocationSync)
+        {
+            return _registry.TryAdd(session, out var error, out var errorMessage)
+                ? SessionAllocationResult.Success(session)
+                : SessionAllocationResult.Failure(
+                    error,
+                    errorMessage ?? "The Web session reservation failed.");
+        }
+    }
+
     public bool TryUpdateStatus(Guid sessionId, SessionStatus status, out ActiveSession? updated) =>
         _registry.TryUpdateStatus(sessionId, status, out updated);
 

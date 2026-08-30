@@ -19,7 +19,7 @@ public static class WaitingRoomAutoAdmitCommand
     private static readonly TimeSpan VerificationWindow = TimeSpan.FromSeconds(2.5);
     private const double MinimumPanelRowConfidence = 0.90;
 
-    public static int Execute(CliOptions options)
+    public static int Execute(CliOptions options, CancellationToken cancellationToken = default)
     {
         int timeoutSeconds = options.TimeoutExplicitlySet ? options.TimeoutSeconds : 0;
         Console.WriteLine("================================================================================");
@@ -52,7 +52,7 @@ public static class WaitingRoomAutoAdmitCommand
         int knownWaitingCount = 0;
         IntPtr lastObservedForegroundHwnd = NativeMethods.GetForegroundWindow();
 
-        using var cancellation = new CancellationTokenSource();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (timeoutSeconds > 0) cancellation.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
         ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
         {
