@@ -1,4 +1,5 @@
 using Microsoft.Playwright;
+using System.Text.RegularExpressions;
 using ZoomAutoAdmit.Core.Engines;
 using ZoomAutoAdmit.Core.Formatting;
 using ZoomAutoAdmit.Core.Models;
@@ -170,7 +171,45 @@ public sealed class WebAutoAdmitEngine : IAutoAdmitEngine, IAsyncDisposable
         ConsoleLogger.Info("WEB_AUTO_ADMIT_STOPPED");
     }
 
+    public Task<bool> DisableMicrophoneAsync(CancellationToken cancellationToken = default) =>
+        EnsureMeetingControlOffAsync(
+            new Regex(@"^(?:Unmute|Unmute my audio)$", RegexOptions.IgnoreCase),
+            new Regex(@"^(?:Mute|Mute my audio)$", RegexOptions.IgnoreCase),
+            cancellationToken);
+
+    public Task<bool> DisableCameraAsync(CancellationToken cancellationToken = default) =>
+        EnsureMeetingControlOffAsync(
+            new Regex(@"^(?:Start Video|Start my video)$", RegexOptions.IgnoreCase),
+            new Regex(@"^(?:Stop Video|Stop my video)$", RegexOptions.IgnoreCase),
+            cancellationToken);
+
     public ValueTask DisposeAsync() => new(StopAsync());
+
+    private async Task<bool> EnsureMeetingControlOffAsync(
+        Regex alreadyOffName,
+        Regex turnOffName,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var session = _session ?? throw new InvalidOperationException("The Web meeting is not started.");
+        var surface = await _meetingController.FindActiveMeetingAsync(session);
+        if (surface == null) return false;
+        foreach (var button in await surface.Frame.GetByRole(
+                     AriaRole.Button,
+                     new() { NameRegex = alreadyOffName }).AllAsync())
+        {
+            if (await button.IsVisibleAsync()) return true;
+        }
+        foreach (var button in await surface.Frame.GetByRole(
+                     AriaRole.Button,
+                     new() { NameRegex = turnOffName }).AllAsync())
+        {
+            if (!await button.IsVisibleAsync()) continue;
+            await button.ClickAsync(new() { Timeout = 3000 });
+            return true;
+        }
+        return false;
+    }
 
     private async Task ExecuteWithRetryAsync(
         ZoomBrowserSession session,

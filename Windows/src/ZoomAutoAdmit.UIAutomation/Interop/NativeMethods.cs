@@ -273,6 +273,7 @@ public static class NativeMethods
 
     public const int SW_SHOWNORMAL = 1;
     public const int SW_SHOWMINIMIZED = 2;
+    public const int SW_SHOW = 5;
     public const int SW_MINIMIZE = 6;
     public const int SW_RESTORE = 9;
 
@@ -360,6 +361,65 @@ public static class NativeMethods
 
     public static string DescribeWindow(IntPtr window) =>
         $"HWND=0x{window.ToInt64():X} process='{GetProcessNameSafe(window)}' class='{GetClassNameSafe(window)}' title='{GetWindowTitleSafe(window)}'";
+
+    [DllImport("user32.dll")]
+    public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+    public const uint KEYEVENTF_KEYUP = 0x0002;
+
+    public const byte VK_RETURN = 0x0D;
+    public const byte VK_UP = 0x26;
+    public const byte VK_DOWN = 0x28;
+    public const byte VK_RIGHT = 0x27;
+    public const byte VK_LEFT = 0x25;
+    public const byte VK_ESCAPE = 0x1B;
+    public const byte VK_TAB = 0x09;
+
+    public static void SendKeyPress(byte vk)
+    {
+        keybd_event(vk, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(60);
+        keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        Thread.Sleep(120);
+    }
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+    public static void ForceForegroundWindow(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero) return;
+        if (IsIconic(hWnd))
+        {
+            ShowWindow(hWnd, SW_RESTORE);
+        }
+        else
+        {
+            ShowWindow(hWnd, SW_SHOW);
+        }
+
+        IntPtr fgWnd = GetForegroundWindow();
+        uint fgThreadId = fgWnd != IntPtr.Zero ? GetWindowThreadProcessId(fgWnd, out _) : 0;
+        uint curThreadId = GetCurrentThreadId();
+
+        if (fgThreadId != 0 && fgThreadId != curThreadId)
+        {
+            AttachThreadInput(curThreadId, fgThreadId, true);
+            SetForegroundWindow(hWnd);
+            BringWindowToTop(hWnd);
+            AttachThreadInput(curThreadId, fgThreadId, false);
+        }
+        else
+        {
+            SetForegroundWindow(hWnd);
+            BringWindowToTop(hWnd);
+        }
+    }
 }
 
 public sealed record WindowPointEvidence(

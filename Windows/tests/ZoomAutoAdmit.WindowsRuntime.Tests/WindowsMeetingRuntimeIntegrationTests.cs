@@ -286,6 +286,12 @@ public sealed class WindowsMeetingRuntimeIntegrationTests : IDisposable
             }
         }
 
+        public Task<bool> DisableMicrophoneAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(true);
+
+        public Task<bool> DisableCameraAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(true);
+
         public Task StopAsync()
         {
             StopCount++;

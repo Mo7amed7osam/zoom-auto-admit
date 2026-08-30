@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace ZoomAutoAdmit.Core.Models;
 
 public class CliOptions
@@ -7,6 +9,7 @@ public class CliOptions
     public bool ShowAll { get; set; }
     public string? Query { get; set; }
     public int? TargetProcessId { get; set; }
+    public long? TargetWindowHandle { get; set; }
     public int MaxDepth { get; set; } = 15;
     public int MaxElements { get; set; } = 800;
     public int DelaySeconds { get; set; } = 5;
@@ -17,6 +20,9 @@ public class CliOptions
     public string Engine { get; set; } = "windows";
     public string WebProfile { get; set; } = "default";
     public string? MeetingUrl { get; set; }
+    public string? AccountId { get; set; }
+    public string? TargetEmail { get; set; }
+    public Guid? ScheduleId { get; set; }
     public bool WebHeaded { get; set; }
     public int WebPollIntervalMilliseconds { get; set; } = 750;
 
@@ -26,6 +32,8 @@ public class CliOptions
         "processes",
         "find",
         "account-menu-inspect",
+        "keyboard-switch-debug",
+        "uia-hwnd-inspect",
         "account-menu-capture",
         "profile-menu-watch",
         "meeting-watch",
@@ -35,7 +43,9 @@ public class CliOptions
         "waiting-toast-admit-once",
         "waiting-row-hover-watch",
         "waiting-room-auto-admit",
-        "background-zoom-test"
+        "background-zoom-test",
+        "meeting-start",
+        "diagnose-zoom"
     };
 
     public static CliOptions Parse(string[] args)
@@ -100,6 +110,25 @@ public class CliOptions
                     }
                 }
             }
+            else if (arg.Equals("--account-id", StringComparison.OrdinalIgnoreCase))
+            {
+                if (index + 1 < args.Length)
+                {
+                    options.AccountId = args[++index].Trim();
+                }
+            }
+            else if (arg.Equals("--target-email", StringComparison.OrdinalIgnoreCase))
+            {
+                if (index + 1 < args.Length) options.TargetEmail = args[++index].Trim();
+            }
+            else if (arg.Equals("--schedule-id", StringComparison.OrdinalIgnoreCase))
+            {
+                if (index + 1 < args.Length && Guid.TryParse(args[index + 1], out var schedId))
+                {
+                    options.ScheduleId = schedId;
+                    index++;
+                }
+            }
             else if (arg.Equals("--headed", StringComparison.OrdinalIgnoreCase))
             {
                 options.WebHeaded = true;
@@ -153,6 +182,21 @@ public class CliOptions
                 {
                     options.TargetProcessId = pid;
                     index++;
+                }
+            }
+            else if (arg.Equals("--hwnd", StringComparison.OrdinalIgnoreCase))
+            {
+                if (index + 1 < args.Length)
+                {
+                    string value = args[index + 1].Trim();
+                    bool parsed = value.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                        ? long.TryParse(value[2..], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out long handle)
+                        : long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out handle);
+                    if (parsed && handle > 0)
+                    {
+                        options.TargetWindowHandle = handle;
+                        index++;
+                    }
                 }
             }
             else if (options.Command.Equals("find", StringComparison.OrdinalIgnoreCase) && options.Query == null && !arg.StartsWith("-", StringComparison.Ordinal))

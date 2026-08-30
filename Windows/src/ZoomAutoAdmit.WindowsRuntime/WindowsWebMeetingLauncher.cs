@@ -9,6 +9,8 @@ public interface IWindowsWebAutoAdmitLifecycle
 {
     Task StartAsync(CliOptions options, CancellationToken cancellationToken);
     Task MonitorAsync(CliOptions options, CancellationToken cancellationToken);
+    Task<bool> DisableMicrophoneAsync(CancellationToken cancellationToken);
+    Task<bool> DisableCameraAsync(CancellationToken cancellationToken);
     Task StopAsync();
 }
 
@@ -19,6 +21,10 @@ public sealed class WindowsWebAutoAdmitLifecycle(WebAutoAdmitEngine engine)
         engine.StartAsync(options, cancellationToken);
     public Task MonitorAsync(CliOptions options, CancellationToken cancellationToken) =>
         engine.MonitorAsync(options, cancellationToken);
+    public Task<bool> DisableMicrophoneAsync(CancellationToken cancellationToken) =>
+        engine.DisableMicrophoneAsync(cancellationToken);
+    public Task<bool> DisableCameraAsync(CancellationToken cancellationToken) =>
+        engine.DisableCameraAsync(cancellationToken);
     public Task StopAsync() => engine.StopAsync();
 }
 
@@ -26,6 +32,22 @@ public interface IWindowsWebMeetingPreparation
 {
     Task<MeetingOperationResult> DisableMicrophoneAsync(CancellationToken cancellationToken);
     Task<MeetingOperationResult> DisableCameraAsync(CancellationToken cancellationToken);
+}
+
+public sealed class WindowsWebMeetingPreparation(IWindowsWebAutoAdmitLifecycle engine)
+    : IWindowsWebMeetingPreparation
+{
+    public async Task<MeetingOperationResult> DisableMicrophoneAsync(
+        CancellationToken cancellationToken) =>
+        await engine.DisableMicrophoneAsync(cancellationToken)
+            ? MeetingOperationResult.Success()
+            : MeetingOperationResult.Failure("The Zoom Web microphone control was not found.");
+
+    public async Task<MeetingOperationResult> DisableCameraAsync(
+        CancellationToken cancellationToken) =>
+        await engine.DisableCameraAsync(cancellationToken)
+            ? MeetingOperationResult.Success()
+            : MeetingOperationResult.Failure("The Zoom Web camera control was not found.");
 }
 
 public sealed class WindowsWebMeetingLauncher : IMeetingEngineRuntime, IAsyncDisposable

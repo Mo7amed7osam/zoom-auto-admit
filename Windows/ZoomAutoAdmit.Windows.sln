@@ -24,6 +24,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZoomAutoAdmit.WindowsRuntim
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZoomAutoAdmit.WindowsRuntime.Tests", "tests\ZoomAutoAdmit.WindowsRuntime.Tests\ZoomAutoAdmit.WindowsRuntime.Tests.csproj", "{52A5B5A5-07B6-45BA-A4B5-D53488047151}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZoomAutoAdmit.WindowsUI", "src\ZoomAutoAdmit.WindowsUI\ZoomAutoAdmit.WindowsUI.csproj", "{7BFCED65-0D86-4D9D-B505-C799B3505C39}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ZoomAutoAdmit.WindowsUI.Tests", "tests\ZoomAutoAdmit.WindowsUI.Tests\ZoomAutoAdmit.WindowsUI.Tests.csproj", "{391278A2-9767-4801-8E32-353370B5E35C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -66,6 +70,14 @@ Global
 		{52A5B5A5-07B6-45BA-A4B5-D53488047151}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{52A5B5A5-07B6-45BA-A4B5-D53488047151}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{52A5B5A5-07B6-45BA-A4B5-D53488047151}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7BFCED65-0D86-4D9D-B505-C799B3505C39}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7BFCED65-0D86-4D9D-B505-C799B3505C39}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7BFCED65-0D86-4D9D-B505-C799B3505C39}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7BFCED65-0D86-4D9D-B505-C799B3505C39}.Release|Any CPU.Build.0 = Release|Any CPU
+		{391278A2-9767-4801-8E32-353370B5E35C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{391278A2-9767-4801-8E32-353370B5E35C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{391278A2-9767-4801-8E32-353370B5E35C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{391278A2-9767-4801-8E32-353370B5E35C}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -75,5 +87,7 @@ Global
 		{6A051388-A69F-4ABF-BCA1-6ECAF90DEB8D} = {90388369-4D7C-4221-9571-CCC8EF41FBCD}
 		{CF206934-7F49-48C5-83A7-00444AA6FF9E} = {B6F428AB-AFD3-427A-BE30-794DB3318B5A}
 		{52A5B5A5-07B6-45BA-A4B5-D53488047151} = {90388369-4D7C-4221-9571-CCC8EF41FBCD}
+		{7BFCED65-0D86-4D9D-B505-C799B3505C39} = {B6F428AB-AFD3-427A-BE30-794DB3318B5A}
+		{391278A2-9767-4801-8E32-353370B5E35C} = {90388369-4D7C-4221-9571-CCC8EF41FBCD}
 	EndGlobalSection
 EndGlobal

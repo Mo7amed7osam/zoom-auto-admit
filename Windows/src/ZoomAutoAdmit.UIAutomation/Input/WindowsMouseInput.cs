@@ -40,17 +40,11 @@ public sealed class WindowsMouseInput : IMouseInput
 
     public void LeftClickOncePreservingCursor(int x, int y)
     {
-        if (!GetCursorPos(out var original))
-        {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "GetCursorPos failed.");
-        }
+        bool hasOriginal = GetCursorPos(out var original);
 
         try
         {
-            if (!SetCursorPos(x, y))
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetCursorPos failed.");
-            }
+            SetCursorPos(x, y);
 
             var inputs = new[]
             {
@@ -58,34 +52,25 @@ public sealed class WindowsMouseInput : IMouseInput
                 CreateMouseInput(MouseEventLeftUp)
             };
 
-            uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
-            if (sent != inputs.Length)
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), $"SendInput sent {sent} of {inputs.Length} events.");
-            }
+            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
         }
         finally
         {
-            if (!SetCursorPos(original.X, original.Y))
+            if (hasOriginal)
             {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Failed to restore the original cursor position.");
+                try { SetCursorPos(original.X, original.Y); }
+                catch { }
             }
         }
     }
 
     public void ScrollWheelPreservingCursor(int x, int y, int wheelDelta)
     {
-        if (!GetCursorPos(out var original))
-        {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "GetCursorPos failed.");
-        }
+        bool hasOriginal = GetCursorPos(out var original);
 
         try
         {
-            if (!SetCursorPos(x, y))
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "SetCursorPos failed.");
-            }
+            SetCursorPos(x, y);
 
             var input = new INPUT
             {
@@ -101,17 +86,14 @@ public sealed class WindowsMouseInput : IMouseInput
             };
 
             var inputs = new[] { input };
-            uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
-            if (sent != inputs.Length)
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), $"SendInput sent {sent} of {inputs.Length} events.");
-            }
+            SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
         }
         finally
         {
-            if (!SetCursorPos(original.X, original.Y))
+            if (hasOriginal)
             {
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Failed to restore the original cursor position.");
+                try { SetCursorPos(original.X, original.Y); }
+                catch { }
             }
         }
     }

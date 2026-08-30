@@ -54,6 +54,31 @@ public sealed class MeetingOrchestratorTests
     }
 
     [Fact]
+    public async Task ExplicitWebPreferenceUsesExistingWebAllocationPath()
+    {
+        var desktop = new FakeRuntime(SessionEngineType.Desktop);
+        var web = new FakeRuntime(SessionEngineType.Web);
+        var orchestrator = Orchestrator(
+            new FakeAccountManager(Account("web-preferred-account")),
+            new SessionCoordinator(),
+            desktop,
+            web);
+        var meeting = Meeting("web-preferred-account") with
+        {
+            PreferredEngine = SessionEngineType.Web
+        };
+
+        var session = await orchestrator.RunAsync(meeting);
+
+        Assert.Equal(MeetingState.Monitoring, session.State);
+        Assert.Equal(SessionEngineType.Web, session.Allocation!.EngineType);
+        Assert.Empty(desktop.Calls);
+        Assert.Equal(
+            ["launch", "verify-joined", "disable-mic", "disable-camera", "start-auto-admit"],
+            web.Calls);
+    }
+
+    [Fact]
     public async Task AccountSwitchFailureStopsDesktopFlow()
     {
         var desktop = new FakeRuntime(SessionEngineType.Desktop)

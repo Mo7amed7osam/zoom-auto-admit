@@ -9,6 +9,15 @@ namespace ZoomAutoAdmit.Core.Tests;
 public class InspectionOptionsTests
 {
     [Fact]
+    public void Parse_KeyboardSwitchDebug_RequiresExplicitCommandAndCapturesEmail()
+    {
+        var options = CliOptions.Parse(["keyboard-switch-debug", "--target-email", "depi+21@eyouthlearning.com"]);
+        Assert.Equal("keyboard-switch-debug", options.Command);
+        Assert.Equal("depi+21@eyouthlearning.com", options.TargetEmail);
+        Assert.Equal("inspect", CliOptions.Parse(["--target-email", "depi+21@eyouthlearning.com"]).Command);
+    }
+
+    [Fact]
     public void Parse_DefaultArgs_ReturnsInspectCommandWithDefaults()
     {
         var options = CliOptions.Parse(Array.Empty<string>());
@@ -50,6 +59,18 @@ public class InspectionOptionsTests
         Assert.Equal(25, options.MaxDepth);
         Assert.Equal(1200, options.MaxElements);
         Assert.Equal(9988, options.TargetProcessId);
+    }
+
+    [Theory]
+    [InlineData("0x00060CDC", 0x00060CDC)]
+    [InlineData("396508", 396508)]
+    public void Parse_UiaHwndInspect_CapturesHexOrDecimalHandle(string value, long expected)
+    {
+        var options = CliOptions.Parse(["uia-hwnd-inspect", "--hwnd", value, "--delay", "0"]);
+
+        Assert.Equal("uia-hwnd-inspect", options.Command);
+        Assert.Equal(expected, options.TargetWindowHandle);
+        Assert.Equal(0, options.DelaySeconds);
     }
 
     [Theory]
@@ -174,5 +195,19 @@ public class InspectionOptionsTests
         Assert.Equal("default", options.WebProfile);
         Assert.Null(options.MeetingUrl);
         Assert.Equal(750, options.WebPollIntervalMilliseconds);
+    }
+
+    [Fact]
+    public void Parse_MeetingStart_CapturesAccountAndMeetingUrl()
+    {
+        var options = CliOptions.Parse([
+            "meeting-start",
+            "--account-id", "teacher-1",
+            "--meeting-url", "https://zoom.us/j/123456789"
+        ]);
+
+        Assert.Equal("meeting-start", options.Command);
+        Assert.Equal("teacher-1", options.AccountId);
+        Assert.Equal("https://zoom.us/j/123456789", options.MeetingUrl);
     }
 }

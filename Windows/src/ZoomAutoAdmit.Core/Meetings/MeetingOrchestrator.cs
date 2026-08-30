@@ -6,7 +6,12 @@ namespace ZoomAutoAdmit.Core.Meetings;
 public sealed record MeetingAccount(
     string AccountId,
     string DisplayName,
-    string CredentialReference);
+    string CredentialReference,
+    SessionEngineType? PreferredEngine = null)
+{
+    // Explicit account identity; credential references identify secure storage, not Zoom accounts.
+    public string? ZoomEmail { get; init; }
+}
 
 public interface IMeetingAccountManager
 {
@@ -96,10 +101,16 @@ public sealed class MeetingOrchestrator
             if (account == null)
                 return Fail(session, "The requested account could not be loaded.");
 
-            var allocationResult = _sessionCoordinator.Allocate(
-                meeting.AccountId,
-                meeting.StartTime,
-                sessionId);
+            var preferredEngine = meeting.PreferredEngine ?? account.PreferredEngine;
+            var allocationResult = preferredEngine == SessionEngineType.Web
+                ? _sessionCoordinator.AllocateWeb(
+                    meeting.AccountId,
+                    meeting.StartTime,
+                    sessionId)
+                : _sessionCoordinator.Allocate(
+                    meeting.AccountId,
+                    meeting.StartTime,
+                    sessionId);
             if (!allocationResult.IsSuccess || allocationResult.Session == null)
                 return Fail(session, allocationResult.ErrorMessage ?? "Engine allocation failed.");
 

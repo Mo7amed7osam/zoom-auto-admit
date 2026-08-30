@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ZoomAutoAdmit.Core\ZoomAutoAdmit.Core.csproj" />
+    <ProjectReference Include="..\ZoomAutoAdmit.Inspector\ZoomAutoAdmit.Inspector.csproj" />
+    <ProjectReference Include="..\ZoomAutoAdmit.WindowsRuntime\ZoomAutoAdmit.WindowsRuntime.csproj" />
+  </ItemGroup>
+</Project>

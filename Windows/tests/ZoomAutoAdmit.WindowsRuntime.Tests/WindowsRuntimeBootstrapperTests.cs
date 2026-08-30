@@ -1,0 +1,203 @@
+using System.Text.Json;
+using ZoomAutoAdmit.Core.Sessions;
+using ZoomAutoAdmit.Inspector.Runtime;
+using Xunit;
+
+namespace ZoomAutoAdmit.WindowsRuntime.Tests;
+
+public sealed class WindowsRuntimeBootstrapperTests : IDisposable
+{
+    private readonly string _root = Path.Combine(
+        Path.GetTempPath(),
+        "ZoomAutoAdmitBootstrapperTests",
+        Guid.NewGuid().ToString("N"));
+
+    [Fact]
+    public async Task BootstrapCreatesCompleteProductionDependencyGraph()
+    {
+        string accountsPath = CreateAccountsFile("teacher-1");
+        string profilesRoot = Path.Combine(_root, "Profiles");
+
+        await using var bootstrapper = new WindowsRuntimeBootstrapper(
+            accountsPath,
+            profilesRoot,
+            new AlwaysResolvableCredentialReference());
+
+        Assert.NotNull(bootstrapper.AccountManager);
+        Assert.NotNull(bootstrapper.ProfileMapper);
+        Assert.NotNull(bootstrapper.SessionCoordinator);
+        Assert.NotNull(bootstrapper.RuntimeFactory);
+        Assert.NotNull(bootstrapper.Orchestrator);
+        Assert.NotNull(bootstrapper.ScheduleStore);
+        Assert.NotNull(bootstrapper.Scheduler);
+    }
+
+    [Fact]
+    public async Task AccountConfigurationLoadsPreferredEngineAndCreatesIsolatedProfile()
+    {
+        string accountsPath = CreateAccountsFile("teacher-1", AccountEnginePreference.Web);
+        string profilesRoot = Path.Combine(_root, "Profiles");
+        var mapper = new WindowsAccountWebProfileMapper(profilesRoot);
+        var manager = new WindowsMeetingAccountManager(
+            accountsPath,
+            new AlwaysResolvableCredentialReference(),
+            mapper);
+
+        var account = await manager.LoadAsync("TEACHER-1");
+
+        Assert.NotNull(account);
+        Assert.Equal("teacher-1", account.AccountId);
+        Assert.Equal("Teacher One", account.DisplayName);
+        Assert.Equal("wincred:ZoomAutoAdmit/teacher-1", account.CredentialReference);
+        Assert.Equal(SessionEngineType.Web, account.PreferredEngine);
+        Assert.True(Directory.Exists(Path.Combine(profilesRoot, "teacher-1")));
+    }
+
+    [Theory]
+    [InlineData(AccountEnginePreference.Auto, null)]
+    [InlineData(AccountEnginePreference.Desktop, SessionEngineType.Desktop)]
+    [InlineData(AccountEnginePreference.Web, SessionEngineType.Web)]
+    public async Task LoadAccountSupportsEveryConfiguredEnginePreference(
+        AccountEnginePreference configured,
+        SessionEngineType? expectedRuntimePreference)
+    {
+        string accountsPath = CreateAccountsFile("teacher-1", configured);
+        var manager = new WindowsMeetingAccountManager(
+            accountsPath,
+            new AlwaysResolvableCredentialReference(),
+            new WindowsAccountWebProfileMapper(Path.Combine(_root, "Profiles")));
+
+        var account = await manager.LoadAsync("teacher-1");
+
+        Assert.NotNull(account);
+        Assert.Equal(expectedRuntimePreference, account.PreferredEngine);
+    }
+
+    [Fact]
+    public async Task LegacyNullPreferenceStillLoadsAsAuto()
+    {
+        string accountsPath = CreateAccountsFile("teacher-1", null);
+        var manager = new WindowsMeetingAccountManager(
+            accountsPath,
+            new AlwaysResolvableCredentialReference(),
+            new WindowsAccountWebProfileMapper(Path.Combine(_root, "Profiles")));
+
+        var account = await manager.LoadAsync("teacher-1");
+
+        Assert.NotNull(account);
+        Assert.Null(account.PreferredEngine);
+    }
+
+    [Theory]
+    [InlineData(AccountEnginePreference.Auto)]
+    [InlineData(AccountEnginePreference.Desktop)]
+    [InlineData(AccountEnginePreference.Web)]
+    public async Task SaveAccountPreservesSelectedEngine(AccountEnginePreference selected)
+    {
+        string accountsPath = Path.Combine(_root, "Accounts", "accounts.json");
+        var manager = new WindowsMeetingAccountManager(
+            accountsPath,
+            new AlwaysResolvableCredentialReference(),
+            new WindowsAccountWebProfileMapper(Path.Combine(_root, "Profiles")));
+
+        await manager.UpsertAsync(new WindowsMeetingAccountMetadata(
+            "teacher-1",
+            "Teacher One",
+            "wincred:ZoomAutoAdmit/teacher-1",
+            selected));
+
+        var saved = Assert.Single(await manager.ListConfiguredAsync());
+        Assert.Equal(selected, saved.PreferredEngine);
+    }
+
+    [Fact]
+    public void ProfileMappingReusesAccountDirectoryAndPreservesLegacyProfiles()
+    {
+        string profilesRoot = Path.Combine(_root, "Profiles");
+        string legacyProfile = Path.Combine(profilesRoot, "Default");
+        Directory.CreateDirectory(legacyProfile);
+        File.WriteAllText(Path.Combine(legacyProfile, "marker.txt"), "keep");
+        var mapper = new WindowsAccountWebProfileMapper(profilesRoot);
+
+        string first = mapper.ResolveDirectory("teacher-1");
+        string second = mapper.ResolveDirectory("teacher-1");
+
+        Assert.Equal(first, second);
+        Assert.Equal(Path.Combine(profilesRoot, "teacher-1"), first);
+        Assert.True(File.Exists(Path.Combine(legacyProfile, "marker.txt")));
+    }
+
+    [Fact]
+    public async Task MissingAccountFailsWithoutCreatingAProfile()
+    {
+        string accountsPath = CreateAccountsFile("teacher-1");
+        string profilesRoot = Path.Combine(_root, "Profiles");
+        var manager = new WindowsMeetingAccountManager(
+            accountsPath,
+            new AlwaysResolvableCredentialReference(),
+            new WindowsAccountWebProfileMapper(profilesRoot));
+
+        var account = await manager.LoadAsync("missing-account");
+
+        Assert.Null(account);
+        Assert.False(Directory.Exists(Path.Combine(profilesRoot, "missing-account")));
+    }
+
+    [Fact]
+    public async Task AccountStoreSupportsAddEditAndDelete()
+    {
+        string accountsPath = Path.Combine(_root, "Accounts", "accounts.json");
+        var manager = new WindowsMeetingAccountManager(
+            accountsPath,
+            new AlwaysResolvableCredentialReference(),
+            new WindowsAccountWebProfileMapper(Path.Combine(_root, "Profiles")));
+
+        await manager.UpsertAsync(new WindowsMeetingAccountMetadata(
+            "teacher-1",
+            "Teacher One",
+            "wincred:ZoomAutoAdmit/teacher-1",
+            AccountEnginePreference.Desktop));
+        await manager.UpsertAsync(new WindowsMeetingAccountMetadata(
+            "teacher-1",
+            "Updated Teacher",
+            "wincred:ZoomAutoAdmit/teacher-1",
+            AccountEnginePreference.Web));
+
+        var updated = Assert.Single(await manager.ListConfiguredAsync());
+        Assert.Equal("Updated Teacher", updated.DisplayName);
+        Assert.Equal(AccountEnginePreference.Web, updated.PreferredEngine);
+        Assert.True(await manager.DeleteAsync("teacher-1"));
+        Assert.Empty(await manager.ListConfiguredAsync());
+    }
+
+    private string CreateAccountsFile(
+        string accountId,
+        AccountEnginePreference? preferredEngine = AccountEnginePreference.Auto)
+    {
+        string accountsDirectory = Path.Combine(_root, "Accounts");
+        Directory.CreateDirectory(accountsDirectory);
+        string path = Path.Combine(accountsDirectory, "accounts.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(new[]
+        {
+            new WindowsMeetingAccountMetadata(
+                accountId,
+                "Teacher One",
+                $"wincred:ZoomAutoAdmit/{accountId}",
+                preferredEngine)
+        }, new JsonSerializerOptions
+        {
+            Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+        }));
+        return path;
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+    }
+
+    private sealed class AlwaysResolvableCredentialReference : IWindowsCredentialReferenceResolver
+    {
+        public bool CanResolve(string credentialReference) => true;
+    }
+}

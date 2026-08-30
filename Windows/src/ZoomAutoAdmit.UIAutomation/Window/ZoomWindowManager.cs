@@ -56,15 +56,118 @@ public sealed class ZoomWindowManager
             return ZoomWindowRole.NotificationToast;
         }
 
-        if (className.Equals("ZPContentViewWndClass", StringComparison.OrdinalIgnoreCase) ||
-            className.Equals("ConfMultiTabContentWndClass", StringComparison.OrdinalIgnoreCase) ||
-            title.Contains("Zoom Meeting", StringComparison.OrdinalIgnoreCase) ||
-            title.Contains("Zoom Webinar", StringComparison.OrdinalIgnoreCase))
+        // CptHost is the dedicated Zoom meeting host process
+        if (process.Equals("cptHost", StringComparison.OrdinalIgnoreCase) ||
+            process.Equals("airhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return ZoomWindowRole.MeetingWindow;
+        }
+
+        // Active meeting window titles:
+        // "Zoom Meeting", "Zoom Webinar", "Meeting ID: ...", "Zoom - Free Account" (in meeting)
+        // Zoom Workplace Home screen has title "Zoom Workplace" or "Zoom", which is NOT an active meeting.
+        if (title.Contains("Zoom Meeting", StringComparison.OrdinalIgnoreCase) ||
+            title.Contains("Zoom Webinar", StringComparison.OrdinalIgnoreCase) ||
+            (title.Contains("Meeting", StringComparison.OrdinalIgnoreCase) && !title.Equals("Zoom Workplace", StringComparison.OrdinalIgnoreCase)))
+        {
+            return ZoomWindowRole.MeetingWindow;
+        }
+
+        // Floating meeting video thumbnail window
+        if (className.Equals("ZPFloatVideoWndClass", StringComparison.OrdinalIgnoreCase))
         {
             return ZoomWindowRole.MeetingWindow;
         }
 
         return ZoomWindowRole.Other;
+    }
+
+    public static bool IsActiveMeetingPresent()
+    {
+        // 1. Check for dedicated meeting window (e.g. CptHost or Zoom Meeting window)
+        if (FindMainZoomMeetingWindow() != IntPtr.Zero || FindParticipantsWindow() != IntPtr.Zero)
+        {
+            return true;
+        }
+
+        // 2. Check for visible floating meeting / mini-window
+        bool meetingWindowFound = false;
+        NativeMethods.EnumWindows((hWnd, _) =>
+        {
+            if (NativeMethods.IsWindowVisible(hWnd))
+            {
+                var role = ClassifyZoomWindow(hWnd);
+                if (role == ZoomWindowRole.MeetingWindow || role == ZoomWindowRole.ParticipantsWindow)
+                {
+                    meetingWindowFound = true;
+                    return false;
+                }
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        if (meetingWindowFound) return true;
+
+        // 3. Check if Zoom Home screen has "Return to meeting" / "Back to meeting" button
+        return HasReturnToMeetingButton();
+    }
+
+    public static bool HasReturnToMeetingButton()
+    {
+        bool found = false;
+        try
+        {
+            Discovery.DesktopThread.RunOnInteractiveDesktop(() =>
+            {
+                var candidate = new Discovery.ZoomProcessDiscovery().FindPrimaryCandidate();
+                if (candidate == null) return;
+
+                using var automation = new FlaUI.UIA3.UIA3Automation();
+                var roots = candidate.Windows
+                    .Where(w => w.IsVisible)
+                    .Select(w => w.Handle)
+                    .Append(candidate.MainWindowHandle)
+                    .Where(h => h != IntPtr.Zero)
+                    .Distinct();
+
+                foreach (var h in roots)
+                {
+                    try
+                    {
+                        var root = automation.FromHandle(h);
+                        if (root == null) continue;
+                        if (FindReturnToMeetingElement(root))
+                        {
+                            found = true;
+                            return;
+                        }
+                    }
+                    catch { }
+                }
+            });
+        }
+        catch { }
+        return found;
+    }
+
+    private static bool FindReturnToMeetingElement(FlaUI.Core.AutomationElements.AutomationElement element)
+    {
+        try
+        {
+            string name = element.Properties.Name.ValueOrDefault ?? string.Empty;
+            if (name.IndexOf("return to meeting", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.IndexOf("back to meeting", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            foreach (var child in element.FindAllChildren())
+            {
+                if (FindReturnToMeetingElement(child)) return true;
+            }
+        }
+        catch { }
+        return false;
     }
 
     public static IntPtr FindParticipantsWindow()

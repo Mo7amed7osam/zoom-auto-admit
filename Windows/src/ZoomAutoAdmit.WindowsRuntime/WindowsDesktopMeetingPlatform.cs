@@ -1,9 +1,14 @@
 using System.Diagnostics;
+using System.IO;
 using FlaUI.Core.AutomationElements;
+using FlaUI.Core.Definitions;
 using FlaUI.UIA3;
+using ZoomAutoAdmit.Core.Formatting;
 using ZoomAutoAdmit.Core.Meetings;
 using ZoomAutoAdmit.Core.Matching;
+using ZoomAutoAdmit.Core.Models;
 using ZoomAutoAdmit.UIAutomation.Discovery;
+using ZoomAutoAdmit.UIAutomation.Interop;
 using ZoomAutoAdmit.UIAutomation.Window;
 
 namespace ZoomAutoAdmit.WindowsRuntime;
@@ -12,81 +17,69 @@ public sealed class WindowsDesktopMeetingPlatform : IWindowsDesktopMeetingPlatfo
 {
     private static readonly TimeSpan JoinTimeout = TimeSpan.FromSeconds(30);
 
-    public Task<MeetingOperationResult> SwitchAccountAsync(
-        MeetingAccount account,
-        CancellationToken cancellationToken)
+    private readonly Func<string, string?> _resolveSwitchEmail;
+    private readonly Func<string, CancellationToken, Task<MeetingOperationResult>> _switchAccount;
+
+    public WindowsDesktopMeetingPlatform()
+        : this(WindowsCredentialManagerReferenceResolver.TryGetUsername,
+            (email, token) => new WindowsKeyboardAccountSwitcher().SwitchAsync(email, token)) { }
+
+    internal WindowsDesktopMeetingPlatform(Func<string, string?> resolveEmail,
+        Func<string, CancellationToken, Task<MeetingOperationResult>> switchAccount)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        MeetingOperationResult result = MeetingOperationResult.Failure(
-            $"Zoom account '{account.DisplayName}' was not found in the Desktop account menu.");
-        DesktopThread.RunOnInteractiveDesktop(() =>
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            using var automation = new UIA3Automation();
-            var candidate = new ZoomProcessDiscovery().FindPrimaryCandidate();
-            if (candidate == null)
-            {
-                result = MeetingOperationResult.Failure("Zoom Desktop is not running.");
-                return;
-            }
-
-            var roots = candidate.Windows
-                .Where(window => window.IsVisible)
-                .Select(window => window.Handle)
-                .Append(candidate.MainWindowHandle)
-                .Where(handle => handle != IntPtr.Zero)
-                .Distinct()
-                .ToArray();
-            AutomationElement? profileButton = null;
-            foreach (var handle in roots)
-            {
-                try
-                {
-                    var root = automation.FromHandle(handle);
-                    profileButton = FindProfileButton(root, candidate.ProcessId);
-                    if (profileButton != null) break;
-                }
-                catch { }
-            }
-            if (profileButton == null) return;
-            string currentName = profileButton.Properties.Name.ValueOrDefault ?? string.Empty;
-            if (MatchesAccount(currentName, account))
-            {
-                result = MeetingOperationResult.Success();
-                return;
-            }
-            if (!Invoke(profileButton))
-            {
-                result = MeetingOperationResult.Failure("The Zoom Desktop profile menu could not be opened.");
-                return;
-            }
-
-            Thread.Sleep(400);
-            foreach (var root in automation.GetDesktop().FindAllChildren())
-            {
-                var target = FindAccountEntry(root, candidate.ProcessId, account);
-                if (target == null || !Invoke(target)) continue;
-                result = MeetingOperationResult.Success();
-                return;
-            }
-        });
-        return Task.FromResult(result);
+        _resolveSwitchEmail = resolveEmail;
+        _switchAccount = switchAccount;
     }
 
-    public Task<MeetingOperationResult> LaunchMeetingAsync(
+    public async Task<MeetingOperationResult> SwitchAccountAsync(
+        MeetingAccount account, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        string? email = WindowsMeetingAccountManager.NormalizeZoomEmail(account.ZoomEmail);
+        if (email == null)
+        {
+            ConsoleLogger.Warn($"[ACCOUNT_SWITCH] Legacy account {account.AccountId}: configure Zoom Email to stop relying on credential usernames.");
+            email = _resolveSwitchEmail(account.CredentialReference);
+        }
+        if (string.IsNullOrWhiteSpace(email))
+        {
+            const string error = "The target account email could not be resolved from Windows Credential Manager.";
+            ConsoleLogger.Error($"[ACCOUNT_SWITCH] Failure: {error}");
+            return MeetingOperationResult.Failure(error);
+        }
+
+        ConsoleLogger.Info($"[ACCOUNT_SWITCH] Selecting account: {email}");
+        var result = await _switchAccount(email, cancellationToken);
+        if (result.IsSuccess) ConsoleLogger.Success($"[ACCOUNT_SWITCH] Success: {email}");
+        else ConsoleLogger.Error($"[ACCOUNT_SWITCH] Failure: {result.ErrorMessage}");
+        return result;
+    }
+
+    public async Task<MeetingOperationResult> LaunchMeetingAsync(
         Uri meetingUrl,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            string protocolUrl = CreateZoomDesktopProtocolUrl(meetingUrl);
-            Process.Start(new ProcessStartInfo(protocolUrl) { UseShellExecute = true });
-            return Task.FromResult(MeetingOperationResult.Success());
+            return await Task.Run(() =>
+            {
+                var result = MeetingOperationResult.Failure("Desktop launch did not complete.");
+                DesktopThread.RunOnInteractiveDesktop(() =>
+                {
+                    using var automation = new UIA3Automation();
+                    result = new DesktopMeetingLaunchFlow(new WindowsDesktopJoinActions(automation))
+                        .Run(meetingUrl, cancellationToken);
+                }, uint.MaxValue);
+                cancellationToken.ThrowIfCancellationRequested();
+                return result;
+            }, cancellationToken);
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            return Task.FromResult(MeetingOperationResult.Failure(ex.Message));
+            cancellationToken.ThrowIfCancellationRequested();
+            return MeetingOperationResult.Failure(ex.GetBaseException().Message);
         }
     }
 
@@ -96,7 +89,9 @@ public sealed class WindowsDesktopMeetingPlatform : IWindowsDesktopMeetingPlatfo
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (ZoomWindowManager.FindMainZoomMeetingWindow() != IntPtr.Zero)
+            if (new ZoomProcessDiscovery().FindCandidates(logInfo: false).SelectMany(c => c.Windows)
+                .Any(w => (w.IsVisible || NativeMethods.IsIconic(w.Handle)) &&
+                    ZoomWindowManager.ClassifyZoomWindow(w.Handle) == ZoomWindowRole.MeetingWindow))
                 return MeetingOperationResult.Success();
             await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
         }
@@ -118,12 +113,7 @@ public sealed class WindowsDesktopMeetingPlatform : IWindowsDesktopMeetingPlatfo
 
     internal static string CreateZoomDesktopProtocolUrl(Uri meetingUrl)
     {
-        string[] segments = meetingUrl.AbsolutePath
-            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        string? meetingId = segments
-            .FirstOrDefault(segment => segment.All(char.IsDigit) && segment.Length >= 9);
-        if (meetingId == null)
-            throw new ArgumentException("The Zoom meeting URL does not contain a valid meeting ID.", nameof(meetingUrl));
+        string meetingId = DesktopMeetingLaunchFlow.ExtractMeetingId(meetingUrl);
         string password = meetingUrl.Query
             .TrimStart('?')
             .Split('&', StringSplitOptions.RemoveEmptyEntries)
@@ -164,23 +154,28 @@ public sealed class WindowsDesktopMeetingPlatform : IWindowsDesktopMeetingPlatfo
         return Task.FromResult(result);
     }
 
-    private static AutomationElement? FindProfileButton(AutomationElement element, int processId)
+    private static AutomationElement? FindProfileButton(AutomationElement element, HashSet<int> zoomPids)
     {
         try
         {
-            if (element.Properties.ProcessId.ValueOrDefault != processId) return null;
+            if (!zoomPids.Contains(element.Properties.ProcessId.ValueOrDefault)) return null;
             string controlType = element.Properties.ControlType.ValueOrDefault.ToString();
             string name = element.Properties.Name.ValueOrDefault ?? string.Empty;
             bool enabled = element.Properties.IsEnabled.ValueOrDefault;
-            if (ProfileButtonMatcher.IsProfileSplitButton(
-                    controlType,
-                    name,
-                    enabled,
-                    element.Patterns.Invoke.IsSupported))
+            bool hasAction = element.Patterns.Invoke.IsSupported ||
+                             element.Patterns.ExpandCollapse.IsSupported ||
+                             element.Patterns.LegacyIAccessible.IsSupported;
+
+            if (ProfileButtonMatcher.IsProfileSplitButton(controlType, name, enabled, element.Patterns.Invoke.IsSupported) ||
+                (enabled && hasAction && name.StartsWith("Zoom,", StringComparison.OrdinalIgnoreCase) && name.IndexOf("Status", StringComparison.OrdinalIgnoreCase) >= 0) ||
+                (enabled && (controlType == "Button" || controlType == "SplitButton") && (name.Contains("Licensed account", StringComparison.OrdinalIgnoreCase) || name.Contains("Basic account", StringComparison.OrdinalIgnoreCase))))
+            {
                 return element;
+            }
+
             foreach (var child in element.FindAllChildren())
             {
-                var match = FindProfileButton(child, processId);
+                var match = FindProfileButton(child, zoomPids);
                 if (match != null) return match;
             }
         }
@@ -188,27 +183,55 @@ public sealed class WindowsDesktopMeetingPlatform : IWindowsDesktopMeetingPlatfo
         return null;
     }
 
-    private static AutomationElement? FindAccountEntry(
-        AutomationElement element,
-        int processId,
-        MeetingAccount account)
+    private static IReadOnlyList<IntPtr> GetZoomRootHandles(
+        IReadOnlyList<ZoomProcessCandidate> candidates,
+        HashSet<int> zoomPids)
     {
-        try
+        var roots = new List<IntPtr>();
+        NativeMethods.EnumWindows((hWnd, _) =>
         {
-            if (element.Properties.ProcessId.ValueOrDefault != processId) return null;
-            string name = element.Properties.Name.ValueOrDefault ?? string.Empty;
-            if (MatchesAccount(name, account) &&
-                (element.Patterns.Invoke.IsSupported ||
-                 element.Patterns.SelectionItem.IsSupported ||
-                 element.Patterns.LegacyIAccessible.IsSupported))
-                return element;
-            foreach (var child in element.FindAllChildren())
+            if (NativeMethods.IsWindowVisible(hWnd))
             {
-                var match = FindAccountEntry(child, processId, account);
-                if (match != null) return match;
+                NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
+                string className = NativeMethods.GetClassNameSafe(hWnd);
+                if (zoomPids.Contains((int)pid) &&
+                    (className.Contains("MainFrm", StringComparison.OrdinalIgnoreCase) ||
+                     className.StartsWith("ZPPT", StringComparison.OrdinalIgnoreCase)))
+                {
+                    roots.Add(hWnd);
+                }
             }
+            return true;
+        }, IntPtr.Zero);
+
+        foreach (var candidate in candidates)
+        {
+            if (candidate.MainWindowHandle != IntPtr.Zero) roots.Add(candidate.MainWindowHandle);
+            roots.AddRange(candidate.Windows
+                .Where(window => window.IsVisible &&
+                    (window.ClassName.Contains("MainFrm", StringComparison.OrdinalIgnoreCase) ||
+                     window.ClassName.StartsWith("ZPPT", StringComparison.OrdinalIgnoreCase)))
+                .Select(window => window.Handle));
         }
-        catch { }
+        return roots.Where(handle => handle != IntPtr.Zero).Distinct().ToArray();
+    }
+
+    private static AutomationElement? FindProfileButtonInRoots(
+        UIA3Automation automation,
+        IEnumerable<IntPtr> roots,
+        HashSet<int> zoomPids)
+    {
+        foreach (var handle in roots)
+        {
+            try
+            {
+                var root = automation.FromHandle(handle);
+                if (root == null) continue;
+                var profile = FindProfileButton(root, zoomPids);
+                if (profile != null) return profile;
+            }
+            catch { }
+        }
         return null;
     }
 
@@ -228,10 +251,6 @@ public sealed class WindowsDesktopMeetingPlatform : IWindowsDesktopMeetingPlatfo
         return null;
     }
 
-    private static bool MatchesAccount(string value, MeetingAccount account) =>
-        value.Contains(account.DisplayName, StringComparison.OrdinalIgnoreCase) ||
-        value.Contains(account.AccountId, StringComparison.OrdinalIgnoreCase);
-
     private static bool Invoke(AutomationElement element)
     {
         try
@@ -246,6 +265,11 @@ public sealed class WindowsDesktopMeetingPlatform : IWindowsDesktopMeetingPlatfo
                 element.Patterns.SelectionItem.Pattern.Select();
                 return true;
             }
+            if (element.Patterns.ExpandCollapse.IsSupported)
+            {
+                element.Patterns.ExpandCollapse.Pattern.Expand();
+                return true;
+            }
             if (element.Patterns.LegacyIAccessible.IsSupported)
             {
                 element.Patterns.LegacyIAccessible.Pattern.DoDefaultAction();
@@ -254,5 +278,338 @@ public sealed class WindowsDesktopMeetingPlatform : IWindowsDesktopMeetingPlatfo
         }
         catch { }
         return false;
+    }
+
+    private static bool ExpandOrInvoke(AutomationElement element)
+    {
+        try
+        {
+            if (element.Patterns.ExpandCollapse.IsSupported)
+            {
+                element.Patterns.ExpandCollapse.Pattern.Expand();
+                return true;
+            }
+        }
+        catch { }
+        return Invoke(element);
+    }
+
+    private static void TryStartZoomDesktop()
+    {
+        try
+        {
+            string[] candidatePaths =
+            [
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Zoom", "bin", "Zoom.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Zoom", "bin", "Zoom.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Zoom", "bin", "Zoom.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Zoom", "bin", "Zoom.exe")
+            ];
+
+            string? zoomExe = candidatePaths.FirstOrDefault(File.Exists);
+            if (zoomExe != null)
+            {
+                Process.Start(new ProcessStartInfo(zoomExe) { UseShellExecute = true });
+            }
+        }
+        catch (Exception ex)
+        {
+            ConsoleLogger.Debug($"Failed to launch Zoom Desktop: {ex.Message}");
+        }
+    }
+
+    private static void EnsureZoomWindowActive(ZoomProcessCandidate candidate, UIA3Automation automation)
+    {
+        try
+        {
+            var visibleOrIconic = candidate.Windows
+                .Where(w => w.IsVisible || (candidate.MainWindowHandle != IntPtr.Zero && w.Handle == candidate.MainWindowHandle))
+                .Select(w => w.Handle)
+                .Append(candidate.MainWindowHandle)
+                .Where(h => h != IntPtr.Zero)
+                .Distinct();
+
+            foreach (var handle in visibleOrIconic)
+            {
+                NativeMethods.ForceForegroundWindow(handle);
+            }
+        }
+        catch { }
+    }
+
+    private static AutomationElement? FindSwitchAccountMenuItem(AutomationElement element, HashSet<int> zoomPids)
+    {
+        try
+        {
+            if (!zoomPids.Contains(element.Properties.ProcessId.ValueOrDefault)) return null;
+            string name = element.Properties.Name.ValueOrDefault ?? string.Empty;
+            var controlType = element.Properties.ControlType.ValueOrDefault;
+            if (controlType == ControlType.MenuItem &&
+                (name.IndexOf("switch account", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 name.IndexOf("switch to another account", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return element;
+            }
+
+            foreach (var child in element.FindAllChildren())
+            {
+                var match = FindSwitchAccountMenuItem(child, zoomPids);
+                if (match != null) return match;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static AutomationElement? FindSwitchAccountMenuItemInRoots(
+        IEnumerable<AutomationElement> roots,
+        HashSet<int> zoomPids)
+    {
+        foreach (var root in roots)
+        {
+            var item = FindSwitchAccountMenuItem(root, zoomPids);
+            if (item != null) return item;
+        }
+        return null;
+    }
+
+    private static AutomationElement? WaitForSwitchAccountSubmenu(
+        UIA3Automation automation,
+        HashSet<int> zoomPids,
+        CancellationToken cancellationToken,
+        TimeSpan timeout)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            AutomationElement? submenu = null;
+            NativeMethods.EnumWindows((hWnd, _) =>
+            {
+                if (!NativeMethods.IsWindowVisible(hWnd)) return true;
+                NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
+                if (!zoomPids.Contains((int)pid)) return true;
+                if (!NativeMethods.GetClassNameSafe(hWnd).Equals(
+                        "ZPPTSwitchAccountSubMenuWndClass",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                try { submenu = automation.FromHandle(hWnd); }
+                catch { }
+                return submenu == null;
+            }, IntPtr.Zero);
+
+            if (submenu != null) return submenu;
+            Thread.Sleep(100);
+        }
+        return null;
+    }
+
+    private static IReadOnlyList<AutomationElement> EnumerateMenuItems(
+        AutomationElement submenu,
+        HashSet<int> zoomPids)
+    {
+        var items = new List<AutomationElement>();
+        CollectMenuItems(submenu, zoomPids, items);
+        return items;
+    }
+
+    private static void CollectMenuItems(
+        AutomationElement element,
+        HashSet<int> zoomPids,
+        List<AutomationElement> items)
+    {
+        try
+        {
+            if (!zoomPids.Contains(element.Properties.ProcessId.ValueOrDefault)) return;
+            if (element.Properties.ControlType.ValueOrDefault == ControlType.MenuItem)
+                items.Add(element);
+            foreach (var child in element.FindAllChildren())
+                CollectMenuItems(child, zoomPids, items);
+        }
+        catch { }
+    }
+
+    private static string GetElementSearchText(AutomationElement element)
+    {
+        try
+        {
+            return string.Join(' ',
+                element.Properties.Name.ValueOrDefault ?? string.Empty,
+                element.Properties.HelpText.ValueOrDefault ?? string.Empty,
+                element.Properties.AutomationId.ValueOrDefault ?? string.Empty);
+        }
+        catch { return string.Empty; }
+    }
+
+    internal static bool TextContainsEmail(string value, string email) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        !string.IsNullOrWhiteSpace(email) &&
+        value.Contains(email.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private static bool ElementContainsEmail(AutomationElement element, string email) =>
+        TextContainsEmail(GetElementSearchText(element), email);
+
+    private static bool InvokeMenuItem(AutomationElement item)
+    {
+        try
+        {
+            if (item.Properties.ControlType.ValueOrDefault != ControlType.MenuItem) return false;
+        }
+        catch { return false; }
+        return Invoke(item);
+    }
+
+    private static bool TreeContainsEmail(AutomationElement element, string email)
+    {
+        try
+        {
+            if (ElementContainsEmail(element, email)) return true;
+            foreach (var child in element.FindAllChildren())
+            {
+                if (TreeContainsEmail(child, email)) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static bool TreeContainsEmailAddress(AutomationElement element)
+    {
+        try
+        {
+            if (GetElementSearchText(element).Contains('@')) return true;
+            foreach (var child in element.FindAllChildren())
+            {
+                if (TreeContainsEmailAddress(child)) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static string GetTreeSearchText(AutomationElement element)
+    {
+        var values = new List<string>();
+        CollectTreeSearchText(element, values);
+        return string.Join(" ", values.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct());
+    }
+
+    private static void CollectTreeSearchText(AutomationElement element, List<string> values)
+    {
+        try
+        {
+            string current = GetElementSearchText(element).Trim();
+            if (!string.IsNullOrWhiteSpace(current)) values.Add(current);
+            foreach (var child in element.FindAllChildren())
+                CollectTreeSearchText(child, values);
+        }
+        catch { }
+    }
+
+    private static bool VerifyActiveAccountByEmail(
+        UIA3Automation automation,
+        ZoomProcessDiscovery discovery,
+        string targetEmail,
+        CancellationToken cancellationToken,
+        TimeSpan timeout)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + timeout;
+        bool profileMenuRequested = false;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var candidates = discovery.FindCandidates(logInfo: false);
+            var zoomPids = candidates.Select(candidate => candidate.ProcessId).ToHashSet();
+            var popupContainers = GetPopupElements(automation, zoomPids);
+
+            foreach (var popup in popupContainers)
+            {
+                string className;
+                try { className = popup.Properties.ClassName.ValueOrDefault ?? string.Empty; }
+                catch { continue; }
+                if (className.Equals("ZPPTSwitchAccountSubMenuWndClass", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (TreeContainsEmail(popup, targetEmail)) return true;
+            }
+
+            var roots = GetZoomRootHandles(candidates, zoomPids);
+            var profileButton = FindProfileButtonInRoots(automation, roots, zoomPids);
+            if (profileButton != null && ElementContainsEmail(profileButton, targetEmail)) return true;
+
+            bool submenuStillOpen = popupContainers.Any(popup =>
+            {
+                try
+                {
+                    return popup.Properties.ClassName.ValueOrDefault.Equals(
+                        "ZPPTSwitchAccountSubMenuWndClass",
+                        StringComparison.OrdinalIgnoreCase);
+                }
+                catch { return false; }
+            });
+
+            if (!profileMenuRequested && !submenuStillOpen && profileButton != null)
+            {
+                profileMenuRequested = ExpandOrInvoke(profileButton);
+            }
+            Thread.Sleep(250);
+        }
+        return false;
+    }
+
+    private static List<AutomationElement> GetPopupElements(UIA3Automation automation, HashSet<int> zoomPids)
+    {
+        var list = new List<AutomationElement>();
+        try
+        {
+            NativeMethods.EnumWindows((hWnd, _) =>
+            {
+                if (NativeMethods.IsWindowVisible(hWnd))
+                {
+                    NativeMethods.GetWindowThreadProcessId(hWnd, out var pid);
+                    if (zoomPids.Contains((int)pid))
+                    {
+                        var cls = NativeMethods.GetClassNameSafe(hWnd);
+                        if (cls.StartsWith("zCustomized", StringComparison.OrdinalIgnoreCase) ||
+                            cls.StartsWith("ZPMenu", StringComparison.OrdinalIgnoreCase) ||
+                            cls.Equals("ZPPTSwitchAccountSubMenuWndClass", StringComparison.OrdinalIgnoreCase) ||
+                            cls.StartsWith("PopupContainer", StringComparison.OrdinalIgnoreCase) ||
+                            cls.StartsWith("ZAic", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try
+                            {
+                                var elem = automation.FromHandle(hWnd);
+                                if (elem != null) list.Add(elem);
+                            }
+                            catch { }
+                        }
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+
+            foreach (var child in automation.GetDesktop().FindAllChildren())
+            {
+                try
+                {
+                    if (zoomPids.Contains(child.Properties.ProcessId.ValueOrDefault))
+                    {
+                        var cls = child.Properties.ClassName.ValueOrDefault ?? "";
+                        if (cls.StartsWith("zCustomized", StringComparison.OrdinalIgnoreCase) ||
+                            cls.Equals("ZPPTSwitchAccountSubMenuWndClass", StringComparison.OrdinalIgnoreCase) ||
+                            cls.StartsWith("ZPMenu", StringComparison.OrdinalIgnoreCase) ||
+                            cls.StartsWith("PopupContainer", StringComparison.OrdinalIgnoreCase))
+                        {
+                            list.Add(child);
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return list;
     }
 }

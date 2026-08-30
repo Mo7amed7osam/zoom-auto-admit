@@ -6,7 +6,8 @@ public sealed record ScheduledMeeting(
     Uri MeetingUrl,
     string AccountId,
     DateTimeOffset StartTime,
-    Guid? SessionId = null);
+    Guid? SessionId = null,
+    SessionEngineType? PreferredEngine = null);
 
 public sealed class MeetingSession
 {

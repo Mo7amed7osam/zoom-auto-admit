@@ -9,9 +9,19 @@ public enum LogLevel
     Error
 }
 
+public sealed record LogEntry(DateTimeOffset Timestamp, LogLevel Level, string Message);
+
 public static class ConsoleLogger
 {
     private static readonly object LockObj = new();
+    private static readonly Queue<LogEntry> History = new();
+
+    public static event Action<LogEntry>? EntryWritten;
+
+    public static IReadOnlyList<LogEntry> GetRecentEntries()
+    {
+        lock (LockObj) return History.ToArray();
+    }
 
     public static void Info(string message) => Log(LogLevel.Info, message);
     public static void Success(string message) => Log(LogLevel.Success, message);
@@ -21,7 +31,8 @@ public static class ConsoleLogger
 
     public static void Log(LogLevel level, string message)
     {
-        var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+        var occurredAt = DateTimeOffset.Now;
+        var timestamp = occurredAt.ToString("HH:mm:ss.fff");
         var prefix = level switch
         {
             LogLevel.Debug => "[DEBUG]",
@@ -42,6 +53,7 @@ public static class ConsoleLogger
             _ => ConsoleColor.Gray
         };
 
+        var entry = new LogEntry(occurredAt, level, message);
         lock (LockObj)
         {
             var prevColor = Console.ForegroundColor;
@@ -51,6 +63,14 @@ public static class ConsoleLogger
             Console.Write($"{prefix} ");
             Console.ForegroundColor = prevColor;
             Console.WriteLine(message);
+            History.Enqueue(entry);
+            while (History.Count > 1000) History.Dequeue();
+        }
+
+        foreach (Action<LogEntry> subscriber in EntryWritten?.GetInvocationList() ?? [])
+        {
+            try { subscriber(entry); }
+            catch { /* Logging observers must never interrupt meeting execution. */ }
         }
     }
 }
