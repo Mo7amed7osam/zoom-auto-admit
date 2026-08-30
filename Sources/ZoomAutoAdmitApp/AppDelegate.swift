@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController!
     private var schedulerCoordinator: SchedulerCoordinator!
     private var schedulerWindowController: SchedulerWindowController?
+    private let accountManager = AccountManager()
+    private var accountWindowController: AccountWindowController?
     private var accessibilityCheckGeneration: UInt64 = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -40,11 +42,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // scheduled start can never create a second Waiting Room loop.
         schedulerCoordinator = SchedulerCoordinator(
             state: state,
+            accountManager: accountManager,
             startAutoAdmit: { [weak self] in self?.setMonitoring(true) },
             stopAutoAdmit: { [weak self] in self?.setMonitoring(false) }
         )
         menuBarController.schedulerConfiguration = { [weak self] in
             self?.schedulerCoordinator.currentConfiguration ?? SchedulerConfiguration()
+        }
+        menuBarController.accountProvider = { [weak self] in
+            guard let self else { return [] }
+            return (try? self.accountManager.accounts()) ?? []
         }
         configureMenuActions()
         schedulerCoordinator.start()
@@ -112,6 +119,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController.onRunSchedule = { [weak self] schedule in
             self?.schedulerCoordinator.runNow(schedule)
         }
+        menuBarController.onAddAccount = { [weak self] in self?.openAccounts(addAccount: true) }
+        menuBarController.onManageAccounts = { [weak self] in self?.openAccounts() }
+        menuBarController.onEditAccount = { [weak self] account in self?.openAccounts(editing: account) }
         menuBarController.onQuit = { [weak self] in
             self?.monitor.stop()
             NSApp.terminate(nil)
@@ -180,6 +190,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             schedulerWindowController = SchedulerWindowController(coordinator: schedulerCoordinator)
         }
         schedulerWindowController?.present()
+    }
+
+    private func openAccounts(addAccount: Bool = false, editing account: ZoomAccount? = nil) {
+        if accountWindowController == nil {
+            accountWindowController = AccountWindowController(manager: accountManager)
+            accountWindowController?.model.onAccountsChanged = { [weak self] in
+                self?.schedulerCoordinator.synchronizeManagedAccounts()
+                self?.menuBarController.refresh()
+            }
+        }
+        accountWindowController?.present(addAccount: addAccount, editing: account)
     }
 
     private func captureZoomUISnapshot() {

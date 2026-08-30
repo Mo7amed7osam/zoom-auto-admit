@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Zoom Auto Admit",
+  "version": "1.0.0",
+  "description": "Automatically admits Zoom waiting room participants",
+  "permissions": [
+    "activeTab",
+    "tabs"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.zoom.us/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

@@ -7,6 +7,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onOpenSchedulerLog: (() -> Void)?
     var onCaptureZoomUI: (() -> Void)?
     var onRunSchedule: ((ZoomSchedule) -> Void)?
+    var accountProvider: (() -> [ZoomAccount])?
+    var onAddAccount: (() -> Void)?
+    var onManageAccounts: (() -> Void)?
+    var onEditAccount: ((ZoomAccount) -> Void)?
     /// Supplies the live scheduler configuration for the menu sections.
     var schedulerConfiguration: (() -> SchedulerConfiguration)?
     var onOpenAccessibilitySettings: (() -> Void)?
@@ -110,7 +114,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         schedulesMenuItem.submenu = NSMenu()
         menu.addItem(schedulesMenuItem)
 
-        accountProfilesMenuItem.title = "Account Profiles"
+        accountProfilesMenuItem.title = "Accounts"
         accountProfilesMenuItem.submenu = NSMenu()
         menu.addItem(accountProfilesMenuItem)
 
@@ -183,7 +187,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         let configuration = schedulerConfiguration?() ?? SchedulerConfiguration()
         rebuildSchedulesSubmenu(configuration)
-        rebuildAccountProfilesSubmenu(configuration)
+        rebuildAccountsSubmenu()
     }
 
     private func rebuildSchedulesSubmenu(_ configuration: SchedulerConfiguration) {
@@ -247,20 +251,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         schedulesMenuItem.submenu = submenu
     }
 
-    private func rebuildAccountProfilesSubmenu(_ configuration: SchedulerConfiguration) {
+    private func rebuildAccountsSubmenu() {
         let submenu = NSMenu()
-        if configuration.accountProfiles.isEmpty {
-            let empty = NSMenuItem(title: "No account profiles yet", action: nil, keyEquivalent: "")
+        let accounts = accountProvider?() ?? []
+        if accounts.isEmpty {
+            let empty = NSMenuItem(title: "No accounts yet", action: nil, keyEquivalent: "")
             empty.isEnabled = false
             submenu.addItem(empty)
         }
-        for profile in configuration.accountProfiles {
-            let item = NSMenuItem(title: profile.name, action: nil, keyEquivalent: "")
-            item.isEnabled = false
+        for account in accounts {
+            let item = NSMenuItem(title: account.displayName, action: #selector(editAccount(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = account.id.uuidString
             submenu.addItem(item)
 
             let identifier = NSMenuItem(
-                title: "    Expected Zoom account: \(profile.accountIdentifier)",
+                title: "    \(account.email) · \(account.preferredEngine.rawValue)",
                 action: nil,
                 keyEquivalent: ""
             )
@@ -268,10 +274,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             submenu.addItem(identifier)
         }
         submenu.addItem(.separator())
-        let manage = NSMenuItem(title: "Manage Account Profiles…", action: #selector(openSchedules), keyEquivalent: "")
+        let add = NSMenuItem(title: "+ Add Account…", action: #selector(addAccount), keyEquivalent: "")
+        add.target = self
+        submenu.addItem(add)
+        let manage = NSMenuItem(title: "Manage Accounts…", action: #selector(manageAccounts), keyEquivalent: "")
         manage.target = self
         submenu.addItem(manage)
         accountProfilesMenuItem.submenu = submenu
+    }
+
+    @objc private func addAccount() { onAddAccount?() }
+    @objc private func manageAccounts() { onManageAccounts?() }
+    @objc private func editAccount(_ sender: NSMenuItem) {
+        guard let rawID = sender.representedObject as? String,
+              let id = UUID(uuidString: rawID),
+              let account = accountProvider?().first(where: { $0.id == id }) else { return }
+        onEditAccount?(account)
     }
 
     @objc private func openSchedules() { onOpenSchedules?() }

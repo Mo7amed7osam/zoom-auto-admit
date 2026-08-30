@@ -15,6 +15,7 @@ Zoom Auto Admit watches Zoom's Accessibility hierarchy and presses `Admit All` w
 - Uses Accessibility permission and PID-scoped UI reads instead of mouse coordinates.
 - Includes a diagnostic inspector for reviewing Zoom's live Accessibility tree.
 - Supports scheduled meeting startup, account selection, and launch at login.
+- Manages multiple Zoom accounts with Keychain-backed credentials and Desktop/Web/Auto execution preferences.
 - Has a reusable monitor and workflow core with unit tests and no third-party dependencies.
 
 ## Requirements
@@ -47,6 +48,12 @@ Run the test suite:
 ```sh
 swift test
 ```
+
+## Accounts and hybrid session allocation
+
+The menu-bar **Accounts** submenu opens the native account manager. Account display names and engine preferences are stored as non-sensitive metadata; email and password values are stored as generic-password items in macOS Keychain and are never written to `accounts.json` or the scheduler file. Existing scheduler account profiles continue to load unchanged. New managed profiles persist only a `keychain:<UUID>` reference.
+
+For scheduled meetings, the allocator respects an explicit Web preference and otherwise chooses Desktop Zoom while no desktop meeting is active. If Desktop Zoom is occupied, it launches the meeting in an account-specific Chrome/Chromium user-data directory under `~/Library/Application Support/Zoom Auto Admit/ZoomProfiles/<account UUID>`, allowing the browser's authenticated session to be reused without storing browser passwords in application files.
 
 Inspect Zoom's live hierarchy while its Participants panel is open:
 

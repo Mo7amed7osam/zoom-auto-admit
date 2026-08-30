@@ -11,3 +11,12 @@ dist/
 
 # Swift and macOS artifacts
 *.dSYM/
+
+# Dotnet and Visual Studio artifacts
+[Bb]in/
+[Oo]bj/
+.vs/
+TestResults/
+*.user_uploaded/
+.user_uploaded/
+

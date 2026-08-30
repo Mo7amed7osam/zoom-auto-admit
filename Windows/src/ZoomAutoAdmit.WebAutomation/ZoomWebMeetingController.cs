@@ -1,0 +1,163 @@
+using Microsoft.Playwright;
+using ZoomAutoAdmit.Core.Formatting;
+using ZoomAutoAdmit.WebAutomation.Browser;
+
+namespace ZoomAutoAdmit.WebAutomation;
+
+public sealed class ZoomWebMeetingController
+{
+    private static readonly TimeSpan HeadlessStartupTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ManualLoginPollInterval = TimeSpan.FromSeconds(2);
+    private readonly IZoomWebMeetingLocator _locator;
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+
+    public ZoomWebMeetingController(
+        IZoomWebMeetingLocator? locator = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
+    {
+        _locator = locator ?? new ZoomWebMeetingLocator();
+        _delay = delay ?? Task.Delay;
+    }
+
+    public async Task<ZoomMeetingSurface> OpenAndWaitForHostControlsAsync(
+        ZoomBrowserSession session,
+        string meetingUrl,
+        ZoomProfileManager profileManager,
+        CancellationToken cancellationToken)
+    {
+        Uri validatedUrl = ValidateMeetingUrl(meetingUrl);
+        var openingPage = await OpenMeetingPageAsync(session.Context, validatedUrl);
+        ConsoleLogger.Success("WEB_MEETING_OPENED");
+        bool waitingForManualLogin = !session.Profile.HasReusableSession;
+        if (waitingForManualLogin)
+        {
+            ConsoleLogger.Info("WEB_LOGIN_REQUIRED: Complete Zoom login and join the meeting in the visible managed browser.");
+            ConsoleLogger.Info("Waiting for manual login...");
+        }
+
+        DateTimeOffset? deadline = session.IsHeadless
+            ? DateTimeOffset.UtcNow + HeadlessStartupTimeout
+            : null;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            ZoomMeetingSurface? surface;
+            try
+            {
+                surface = openingPage.IsClosed
+                    ? await _locator.FindAsync(session.Context)
+                    : await _locator.FindAsync(openingPage);
+            }
+            catch (PlaywrightException ex) when (PlaywrightNavigationFailurePolicy.IsTransient(ex))
+            {
+                ConsoleLogger.Info("WEB_NAVIGATION_RETRY: Zoom changed pages or frames; reconnecting.");
+                await _delay(ManualLoginPollInterval, cancellationToken);
+                continue;
+            }
+
+            if (surface != null)
+            {
+                ConsoleLogger.Success("Login detected");
+                ConsoleLogger.Success("Meeting joined");
+                await session.SelectMeetingPageAsync(
+                    surface.Page,
+                    rediscovered: !ReferenceEquals(surface.Page, openingPage));
+                if (!session.Profile.HasReusableSession)
+                    session.Profile = profileManager.MarkSessionReady(session.Profile);
+                return surface;
+            }
+
+            if (deadline != null && DateTimeOffset.UtcNow >= deadline.Value)
+                throw new InvalidOperationException(
+                    "The saved Zoom session did not reach host controls. Re-run with --headed to refresh login manually.");
+            await _delay(
+                session.IsHeadless ? TimeSpan.FromMilliseconds(500) : ManualLoginPollInterval,
+                cancellationToken);
+        }
+        throw new OperationCanceledException(cancellationToken);
+    }
+
+    public async Task<ZoomMeetingSurface?> FindActiveMeetingAsync(ZoomBrowserSession session)
+    {
+        var activePage = session.ActiveMeetingPage;
+        if (activePage != null && !activePage.IsClosed)
+            return await _locator.FindAsync(activePage);
+
+        var rediscovered = await _locator.FindAsync(session.Context);
+        if (rediscovered == null) return null;
+        await session.SelectMeetingPageAsync(rediscovered.Page, rediscovered: session.MeetingPageWasSelected);
+        return rediscovered;
+    }
+
+    public static bool HasOpenMeetingPage(ZoomBrowserSession session) =>
+        session.ActiveMeetingPage is { IsClosed: false };
+
+    public async Task KeepMeetingPageAliveAsync(
+        ZoomBrowserSession session,
+        string meetingUrl)
+    {
+        Uri validatedUrl = ValidateMeetingUrl(meetingUrl);
+        if (HasOpenMeetingPage(session)) return;
+        var rediscovered = await _locator.FindAsync(session.Context);
+        if (rediscovered != null)
+        {
+            await session.SelectMeetingPageAsync(rediscovered.Page, rediscovered: true);
+            return;
+        }
+        bool hasOpenZoomPage = session.Context.Pages.Any(page =>
+            !page.IsClosed && IsSameMeetingAddress(page.Url, validatedUrl));
+        if (!hasOpenZoomPage) await OpenMeetingPageAsync(session.Context, validatedUrl);
+    }
+
+    public static Uri ValidateMeetingUrl(string meetingUrl)
+    {
+        if (!Uri.TryCreate(meetingUrl, UriKind.Absolute, out var uri) ||
+            !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("--meeting-url must be an absolute HTTPS Zoom meeting URL.", nameof(meetingUrl));
+        bool zoomHost = uri.Host.Equals("zoom.us", StringComparison.OrdinalIgnoreCase) ||
+                        uri.Host.EndsWith(".zoom.us", StringComparison.OrdinalIgnoreCase) ||
+                        uri.Host.Equals("zoom.com", StringComparison.OrdinalIgnoreCase) ||
+                        uri.Host.EndsWith(".zoom.com", StringComparison.OrdinalIgnoreCase);
+        if (!zoomHost)
+            throw new ArgumentException("--meeting-url must use a Zoom domain.", nameof(meetingUrl));
+        return uri;
+    }
+
+    public static async Task<IPage> OpenMeetingPageAsync(IBrowserContext context, Uri meetingUrl)
+    {
+        var page = context.Pages.FirstOrDefault(candidate =>
+            !candidate.IsClosed && IsSameMeetingAddress(candidate.Url, meetingUrl));
+        page ??= context.Pages.FirstOrDefault(candidate =>
+            !candidate.IsClosed && candidate.Url.Equals("about:blank", StringComparison.OrdinalIgnoreCase));
+        page ??= context.Pages.FirstOrDefault(candidate => !candidate.IsClosed);
+        page ??= await context.NewPageAsync();
+        if (!IsSameMeetingAddress(page.Url, meetingUrl))
+        {
+            try
+            {
+                await page.GotoAsync(
+                    meetingUrl.AbsoluteUri,
+                    new PageGotoOptions
+                    {
+                        WaitUntil = WaitUntilState.DOMContentLoaded,
+                        Timeout = 30000
+                    });
+            }
+            catch (PlaywrightException ex) when (PlaywrightNavigationFailurePolicy.IsTransient(ex))
+            {
+                // Login and meeting-join redirects can replace the page/frame while Goto is
+                // awaiting DOMContentLoaded. The startup loop reacquires the current page.
+            }
+        }
+        return page;
+    }
+
+    private static bool IsSameMeetingAddress(string candidateUrl, Uri meetingUrl)
+    {
+        if (!Uri.TryCreate(candidateUrl, UriKind.Absolute, out var candidate)) return false;
+        return candidate.Scheme.Equals(meetingUrl.Scheme, StringComparison.OrdinalIgnoreCase) &&
+               candidate.Host.Equals(meetingUrl.Host, StringComparison.OrdinalIgnoreCase) &&
+               candidate.AbsolutePath.TrimEnd('/').Equals(
+                   meetingUrl.AbsolutePath.TrimEnd('/'),
+                   StringComparison.OrdinalIgnoreCase);
+    }
+}

@@ -17,6 +17,9 @@ final class SchedulerCoordinator {
     private let state: AppState
     private let workflowQueue = DispatchQueue(label: "com.mohamedhosam.ZoomAutoAdmit.workflow", qos: .userInitiated)
     private let automation: ZoomAutomating
+    private let accountManager: AccountManager
+    private let allocator: ZoomSessionAllocator
+    private let webAccountManager: ZoomWebAccountManager
 
     /// Supplied by the app delegate so the coordinator drives the one shared monitor.
     private let startAutoAdmit: () -> Void
@@ -34,6 +37,9 @@ final class SchedulerCoordinator {
         store: ScheduleStore = ScheduleStore(),
         schedulerLog: SchedulerLog = .shared,
         automation: ZoomAutomating = LiveZoomAutomation(),
+        accountManager: AccountManager = AccountManager(),
+        allocator: ZoomSessionAllocator = ZoomSessionAllocator(),
+        webAccountManager: ZoomWebAccountManager = ZoomWebAccountManager(),
         startAutoAdmit: @escaping () -> Void,
         stopAutoAdmit: @escaping () -> Void
     ) {
@@ -41,9 +47,16 @@ final class SchedulerCoordinator {
         self.store = store
         self.schedulerLog = schedulerLog
         self.automation = automation
+        self.accountManager = accountManager
+        self.allocator = allocator
+        self.webAccountManager = webAccountManager
         self.startAutoAdmit = startAutoAdmit
         self.stopAutoAdmit = stopAutoAdmit
         self.configuration = store.load()
+        self.configuration = Self.mergingManagedAccounts(
+            (try? accountManager.accounts()) ?? [],
+            into: self.configuration
+        )
 
         scheduler = SchedulerService(
             configuration: configuration,
@@ -95,6 +108,14 @@ final class SchedulerCoordinator {
         refreshNextScheduleSummary()
     }
 
+    func synchronizeManagedAccounts() {
+        let accounts = (try? accountManager.accounts()) ?? []
+        configuration = Self.mergingManagedAccounts(accounts, into: configuration)
+        store.save(configuration)
+        scheduler.update(configuration: configuration)
+        refreshNextScheduleSummary()
+    }
+
     /// Runs a schedule immediately, for testing a configuration without waiting.
     func runNow(_ schedule: ZoomSchedule) {
         guard let profile = configuration.profile(for: schedule) else {
@@ -140,8 +161,43 @@ final class SchedulerCoordinator {
             self.schedulerLog.write("Required account profile: \(profile.name) <\(profile.accountIdentifier)>")
             self.schedulerLog.write("Meeting: \(schedule.meeting.displayText)")
 
+            guard let account = self.managedAccount(for: profile) else {
+                self.schedulerLog.write("Account credential reference is missing for \(profile.name)")
+                self.notify(title: "Scheduled account is unavailable", body: profile.name)
+                return
+            }
+            let executionProfile = ZoomAccountProfile(
+                id: account.id,
+                name: account.displayName,
+                accountIdentifier: account.email
+            )
+            guard let meetingURL = self.webMeetingURL(for: schedule.meeting) else {
+                self.schedulerLog.write("[ALLOCATOR] Meeting has no Web-compatible URL; selecting Desktop engine")
+                self.runDesktopWorkflow(schedule: schedule, profile: executionProfile)
+                return
+            }
+            let request = SessionRequest(
+                id: schedule.id,
+                account: account,
+                meetingURL: meetingURL,
+                startTime: occurrence
+            )
+            let desktopBusy = self.desktopHasActiveMeeting()
+            let engine = self.allocator.allocate(request, desktopHasActiveMeeting: desktopBusy)
+            switch engine {
+            case .desktop:
+                defer { self.allocator.release(request, engine: .desktop) }
+                self.runDesktopWorkflow(schedule: schedule, profile: executionProfile)
+            case .web:
+                self.runWebWorkflow(schedule: schedule, account: account, meetingURL: meetingURL)
+            }
+        }
+    }
+
+    private func runDesktopWorkflow(schedule: ZoomSchedule, profile: ZoomAccountProfile) {
+
             let runner = ZoomWorkflowRunner(
-                automation: self.automation,
+                automation: automation,
                 timeouts: ZoomWorkflowTimeouts()
             ) { [weak self] state, detail in
                 guard let self else { return }
@@ -150,8 +206,71 @@ final class SchedulerCoordinator {
             }
 
             let result = runner.run(schedule: schedule, profile: profile)
-            self.finish(result: result, schedule: schedule)
+            finish(result: result, schedule: schedule)
+    }
+
+    private func runWebWorkflow(schedule: ZoomSchedule, account: ZoomAccount, meetingURL: URL) {
+        do {
+            _ = try webAccountManager.openMeeting(meetingURL, for: account)
+            schedulerLog.write("[WEB] Using saved browser profile for \(account.displayName)")
+            schedulerLog.write("[MEETING] Launching session \(schedule.meeting.displayText)")
+            DispatchQueue.main.async { [state] in
+                state.setWorkflowStatus("Web meeting launched for \(account.displayName)")
+            }
+            notify(title: "Scheduled Web Zoom meeting launched", body: schedule.meeting.name)
+        } catch {
+            schedulerLog.write("Web workflow FAILED for \(schedule.name): \(error.localizedDescription)")
+            notify(title: "Web Zoom meeting not started", body: error.localizedDescription)
         }
+    }
+
+    private func managedAccount(for profile: ZoomAccountProfile) -> ZoomAccount? {
+        if let account = try? accountManager.accounts().first(where: {
+            $0.id == profile.id || $0.email.caseInsensitiveCompare(profile.accountIdentifier) == .orderedSame
+        }) {
+            return account
+        }
+        if profile.accountIdentifier.hasPrefix("keychain:") { return nil }
+        return ZoomAccount(
+            id: profile.id,
+            displayName: profile.name,
+            email: profile.accountIdentifier,
+            preferredEngine: .auto
+        )
+    }
+
+    private func desktopHasActiveMeeting() -> Bool {
+        guard let process = automation.zoomProcess() else { return false }
+        return automation.meetingPresence(for: process).state == .active
+    }
+
+    private func webMeetingURL(for meeting: MeetingReference) -> URL? {
+        guard case .meetingID(let raw) = meeting.kind else { return nil }
+        let digits = MeetingReference.normalizedMeetingID(raw)
+        guard !digits.isEmpty else { return nil }
+        return URL(string: "https://zoom.us/j/\(digits)")
+    }
+
+    private static func mergingManagedAccounts(
+        _ accounts: [ZoomAccount],
+        into configuration: SchedulerConfiguration
+    ) -> SchedulerConfiguration {
+        var result = configuration
+        for account in accounts {
+            let profile = ZoomAccountProfile(
+                id: account.id,
+                name: account.displayName,
+                accountIdentifier: "keychain:\(account.id.uuidString)"
+            )
+            if let index = result.accountProfiles.firstIndex(where: {
+                $0.id == account.id || $0.accountIdentifier.caseInsensitiveCompare(account.email) == .orderedSame
+            }) {
+                result.accountProfiles[index] = profile
+            } else {
+                result.accountProfiles.append(profile)
+            }
+        }
+        return result
     }
 
     private func publish(
