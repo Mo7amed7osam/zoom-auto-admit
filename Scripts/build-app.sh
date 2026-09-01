@@ -37,13 +37,15 @@ output_directory="$project_root/dist"
 app_bundle="$output_directory/Zoom Auto Admit.app"
 contents_directory="$app_bundle/Contents"
 macos_directory="$contents_directory/MacOS"
+resources_directory="$contents_directory/Resources"
 
 if [[ -e "$app_bundle" ]]; then
     rm -rf "$app_bundle"
 fi
-mkdir -p "$macos_directory"
+mkdir -p "$macos_directory" "$resources_directory"
 cp "$binary_directory/ZoomAutoAdmitApp" "$macos_directory/ZoomAutoAdmitApp"
 cp "$project_root/AppBundle/Info.plist" "$contents_directory/Info.plist"
+cp "$project_root/AppBundle/Resources/AppIcon.icns" "$resources_directory/AppIcon.icns"
 chmod 755 "$macos_directory/ZoomAutoAdmitApp"
 
 plutil -lint "$contents_directory/Info.plist"

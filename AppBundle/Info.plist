@@ -8,6 +8,8 @@
     <string>Zoom Auto Admit</string>
     <key>CFBundleExecutable</key>
     <string>ZoomAutoAdmitApp</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.mohamedhosam.ZoomAutoAdmit</string>
     <key>CFBundleInfoDictionaryVersion</key>

@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Zoom Auto Admit (Web)",
+  "version": "0.2.0",
+  "description": "Admits Zoom Web Client waiting-room participants automatically.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://*.zoom.us/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Zoom Auto Admit",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.zoom.us/wc/*",
+        "https://*.zoom.us/j/*",
+        "https://*.zoom.us/s/*",
+        "https://*.zoom.us/w/*"
+      ],
+      "js": ["labels.js", "content.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ]
+}
