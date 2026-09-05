@@ -11,6 +11,7 @@ const statusEl = document.getElementById("status");
 const statusText = document.getElementById("statusText");
 const countEl = document.getElementById("admittedCount");
 const hintEl = document.getElementById("hint");
+const attendanceSummaryEl = document.getElementById("attendanceSummary");
 
 let onZoomPage = false;
 
@@ -62,6 +63,12 @@ chrome.storage.local.get(DEFAULTS, (stored) => {
   renderStatus();
 });
 
+chrome.storage.local.get({ attendanceSession: null }, ({ attendanceSession }) => {
+  if (!attendanceSession?.active) return;
+  const count = Object.keys(attendanceSession.observed || {}).length;
+  attendanceSummaryEl.textContent = `${count} unique participant${count === 1 ? "" : "s"} captured`;
+});
+
 for (const key of TOGGLES) {
   document.getElementById(key).addEventListener("change", (event) => {
     chrome.storage.local.set({ [key]: event.target.checked });
@@ -84,6 +91,10 @@ document.getElementById("dump").addEventListener("click", async () => {
   const tab = await activeTab();
   if (!tab?.id) return;
   chrome.tabs.sendMessage(tab.id, { type: "dump" }, () => void chrome.runtime.lastError);
+});
+
+document.getElementById("openAttendance").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("attendance.html") });
 });
 
 // A plain target="_blank" works here, but Chrome closes the popup before the
