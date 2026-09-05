@@ -4,8 +4,10 @@ A Chrome / Edge extension that **automatically admits people from the Zoom
 waiting room** when you host a meeting in the browser (the Zoom Web Client at
 `app.zoom.us`). No more clicking **Admit** for every latecomer.
 
-It works entirely inside your own browser — no Zoom account connection, no
-sign-in, no server, nothing leaves your machine.
+It works without a Zoom account connection, sign-in, or application server.
+Auto-admit and local attendance matching stay in your browser. If you explicitly
+run optional AI matching, only the unresolved roster and Zoom names are sent to
+OpenRouter using your own API key.
 
 > Companion to the macOS **Zoom Auto Admit** app in this repository, which does
 > the same thing for the native Zoom desktop client.
@@ -19,6 +21,12 @@ sign-in, no server, nothing leaves your machine.
 - Shows a running count of how many people it let in, on the toolbar icon and in
   the popup.
 - Works in several languages (English, Arabic, Spanish, French, German).
+- Records attendance from the open Participants panel every 15 seconds.
+- Imports a class roster, matches Zoom display names locally, and flags uncertain matches for review.
+- Can use an optional OpenRouter API key for unresolved Arabic/English or misspelled names.
+- Exports present, absent, and needs-review results as a UTF-8 CSV file.
+- Preserves the exact roster order and lists captured-but-unmatched Zoom names separately.
+- Enforces one-to-one attendance: one student cannot be matched to two Zoom identities, and one Zoom identity cannot mark two students present.
 
 ## Install (takes a minute)
 
@@ -52,6 +60,39 @@ Click the toolbar icon any time to pause it, switch off **Admit all**, or see
 how many people it has admitted. Leave the meeting tab open — it only works
 while that tab is running.
 
+### Record attendance
+
+1. Click the extension icon and choose **Attendance → Open**.
+2. Paste one official student name per line, or import a CSV/TXT roster.
+3. Enter a session name and click **Start attendance**.
+4. Keep Zoom's **Participants** panel open. The extension records unique names
+   every 15 seconds; **Capture now** takes an immediate snapshot.
+5. Review the matches and click **Export CSV** when finished.
+
+Local name matching does not need an account. For harder cases, paste an
+OpenRouter key in the Attendance screen and select a model. The key is stored
+in `chrome.storage.local` on that browser profile and is sent only to
+OpenRouter when you click the AI matching button. Browser extension storage is
+not a password vault, so use a restricted/low-limit key and clear it when this
+is a shared computer.
+
+### Set up OpenRouter (optional)
+
+1. Sign in at <https://openrouter.ai/>.
+2. Open <https://openrouter.ai/settings/keys> and create a new API key. Give it a
+   small credit limit when the account offers that option.
+3. In the extension, open **Attendance**, paste the key, and press **Save key**.
+   A saved key is shown by its final four characters; it is never committed to
+   this repository.
+4. Enter `openrouter/free` in **Model** to let OpenRouter choose a currently
+   available free model, then press **Match unresolved names with AI**.
+
+Free-model availability and rate limits can change. If matching reports HTTP
+`402`, confirm the key is active, the account balance is not negative, and the
+model is `openrouter/free`. HTTP `429` normally means the free request limit was
+reached; wait and retry later. AI matching is optional—the extension continues
+capturing attendance and applying local exact/normalized matches without it.
+
 ## Requirements
 
 - Google Chrome or Microsoft Edge (any recent version).
@@ -73,9 +114,12 @@ To check what your Zoom shows:
 
 ## Privacy
 
-Everything runs locally in your browser. The extension has access only to
-`*.zoom.us` pages, stores only your on/off settings and the admitted count in
-the browser, and sends nothing anywhere.
+Auto-admit, participant capture, roster storage, local matching, and CSV export
+run locally in your browser. The extension can access `*.zoom.us` and
+`openrouter.ai`; it contacts OpenRouter only after you save a key and click
+**Match unresolved names with AI**. That request contains only unresolved
+official names and unmatched Zoom display names. Your key and attendance data
+are stored in the current browser profile and are never placed in the source.
 
 ## Trouble & limits
 
@@ -97,8 +141,9 @@ readable; the release build is obfuscated.
 | `manifest.json` | MV3 manifest — matches, icons, service worker |
 | `labels.js` | Button labels to press, per language, plus a blocked list |
 | `content.js` | DOM watcher and press logic, injected into every frame |
-| `background.js` | Owns the admitted counter and the toolbar badge |
+| `background.js` | Owns the admitted counter, toolbar badge, and attendance snapshots |
 | `popup.html/.css/.js` | Toolbar UI |
+| `attendance.html/.css/.js` | Roster, capture, matching, OpenRouter, review, and CSV export UI |
 | `icons/` | `icon.svg` (48/128) and `icon-small.svg` (16/32) + rendered PNGs |
 | `build.mjs` | Produces the obfuscated `dist/` build |
 
