@@ -27,10 +27,11 @@ const dist = path.join(root, "dist");
 const bundles = [
   { out: "content.js", inputs: ["labels.js", "content.js"] },
   { out: "background.js", inputs: ["background.js"] },
-  { out: "popup.js", inputs: ["popup.js"] }
+  { out: "popup.js", inputs: ["popup.js"] },
+  { out: "attendance.js", inputs: ["attendance.js"] }
 ];
 
-const copyAsIs = ["popup.html", "popup.css"];
+const copyAsIs = ["popup.html", "popup.css", "attendance.html", "attendance.css"];
 const copyDirs = ["icons"];
 
 const obfuscatorOptions = {
