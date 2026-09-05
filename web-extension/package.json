@@ -1,8 +1,8 @@
 {
   "name": "zoom-auto-admit-web",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "private": true,
-  "description": "Chrome/Edge MV3 extension that admits Zoom Web Client waiting-room participants.",
+  "description": "Chrome/Edge MV3 extension for Zoom Web auto-admit and attendance.",
   "scripts": {
     "build": "node build.mjs"
   },
