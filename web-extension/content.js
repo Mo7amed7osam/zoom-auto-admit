@@ -8,7 +8,8 @@ const SETTINGS = {
   enabled: true,
   preferAdmitAll: true,
   debug: false,
-  extraAdmitLabels: []
+  extraAdmitLabels: [],
+  attendanceEnabled: false
 };
 
 const CLICK_COOLDOWN_MS = 3000;
@@ -17,6 +18,7 @@ const SCAN_INTERVAL_MS = 2000;
 
 const lastClickedAt = new WeakMap();
 let scanTimer = null;
+let lastAttendanceFingerprint = "";
 
 function normalize(value) {
   return (value || "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -119,6 +121,52 @@ function dumpButtons() {
   console.log("[zoom-auto-admit] frame:", location.href, "buttons:", rows.length);
 }
 
+function cleanParticipantName(value) {
+  return (value || "")
+    .replace(/\((?:host|co-host|me|guest|مضيف|مضيف مشارك|أنا)\)/gi, "")
+    .replace(/\b(?:muted|unmuted|speaking|raise(?:d)? hand)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function participantNames() {
+  const selectors = [
+    '[class*="participants-item__display-name"]',
+    '[class*="participant-item__display-name"]',
+    '[class*="participant-name"]',
+    '[data-testid*="participant-name"]',
+    '[aria-label*="participant name" i]'
+  ];
+  const names = new Set();
+  for (const node of document.querySelectorAll(selectors.join(","))) {
+    if (!isVisible(node)) continue;
+    const row = node.closest('[role="listitem"], li, [class*="participant-item"]');
+    const rowText = normalize(row?.textContent);
+    // Waiting-room rows have host controls and are not attendance evidence.
+    if (rowText && ZAA_LABELS.admit.concat(ZAA_LABELS.admitAll).some((label) => rowText.includes(label))) {
+      continue;
+    }
+    const name = cleanParticipantName(
+      node.getAttribute("aria-label") || node.getAttribute("title") || node.textContent
+    );
+    if (name.length >= 2 && name.length <= 120) names.add(name);
+  }
+  return [...names];
+}
+
+function captureAttendance() {
+  if (!SETTINGS.attendanceEnabled) return;
+  const names = participantNames().sort((a, b) => a.localeCompare(b));
+  if (!names.length) return;
+  const fingerprint = names.join("\n");
+  if (fingerprint === lastAttendanceFingerprint) return;
+  lastAttendanceFingerprint = fingerprint;
+  chrome.runtime.sendMessage(
+    { type: "attendanceSnapshot", names, capturedAt: new Date().toISOString(), url: location.href },
+    () => void chrome.runtime.lastError
+  );
+}
+
 chrome.storage.local.get(SETTINGS, (stored) => {
   Object.assign(SETTINGS, stored);
   scan();
@@ -139,6 +187,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "ping") {
     sendResponse({ ok: true, top: window === window.top });
   }
+  if (message?.type === "captureAttendance") {
+    const names = participantNames();
+    sendResponse({ ok: true, names, url: location.href });
+  }
   return false;
 });
 
@@ -148,3 +200,4 @@ new MutationObserver(scheduleScan).observe(document.documentElement, {
 });
 
 setInterval(scan, SCAN_INTERVAL_MS);
+setInterval(captureAttendance, 15000);
