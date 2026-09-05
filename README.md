@@ -27,6 +27,30 @@ Zoom Auto Admit watches Zoom's Accessibility hierarchy and presses `Admit All` w
 
 ## Quick start
 
+### Chrome / Edge extension (Zoom Web Client)
+
+For meetings hosted at `app.zoom.us`, download `zoom-auto-admit-web.zip` from the
+[`web-v0.2.0` release](https://github.com/Mo7amed7osam/zoom-auto-admit/releases/tag/web-v0.2.0),
+unzip it, open `chrome://extensions` or `edge://extensions`, enable **Developer
+mode**, then choose **Load unpacked** and select the unzipped folder.
+
+The web extension now includes attendance tracking: import the official roster,
+start attendance, keep Zoom's Participants panel open, and it captures visible
+participant names every 15 seconds. Results preserve the roster's original order,
+show captured-but-unmatched Zoom names separately, and enforce one-to-one matching
+so one student cannot be marked present under two different Zoom identities.
+
+OpenRouter is optional and is used only when you press **Match unresolved names
+with AI**. Create a key at <https://openrouter.ai/settings/keys>, save it in the
+Attendance screen, and use `openrouter/free` for the free-model router. A `402`
+means the selected model/account cannot currently serve the request; switch to
+`openrouter/free` and check the key's limits or account balance. The key is stored
+only in the current browser profile—use a restricted key and do not share it.
+
+Full extension instructions are in [`web-extension/README.md`](web-extension/README.md).
+
+### Native macOS app
+
 Build the release app:
 
 ```sh
